@@ -464,30 +464,69 @@ console.log("收到訊息:", msg);
 console.log("debtMatch結果:", debtMatch);
 
   if (debtMatch) {
-    const target = debtMatch[1].trim();
-    const sign = debtMatch[2];
-    const amount = Number(debtMatch[3]);
-    const note = debtMatch[4] || "";
+  const target = debtMatch[1].trim();
+  const sign = debtMatch[2];
+  const amount = Number(debtMatch[3]);
+  const note = debtMatch[4] || "";
 
-    const debtor = sign === "-" ? target : actorName;
-    const creditor = sign === "-" ? actorName : target;
+  const debtor = sign === "-" ? target : actorName;
+  const creditor = sign === "-" ? actorName : target;
 
-    await appendSheet("Ledger!A:E", [[
-      nowTW(),
-      debtor,
-      creditor,
-      amount,
-      note
-    ]]);
+  const ledger = await getSheet("Ledger!A:E");
 
-    return client.replyMessage(
-      event.replyToken,
-      flexCard(
-        "帳務已記錄",
-        `${debtor} 欠 ${creditor}\n金額：${amount}\n備註：${note || "無"}`
-      )
-    );
+  let balance = 0;
+
+  ledger.forEach(r => {
+    const d = r[1];
+    const c = r[2];
+    const amt = Number(r[3]) || 0;
+
+    if (d === target && c === actorName) {
+      balance += amt;
+    }
+
+    if (d === actorName && c === target) {
+      balance -= amt;
+    }
+  });
+
+  const signedAmount = sign === "-" ? amount : -amount;
+  const newBalance = balance + signedAmount;
+
+  await appendSheet("Ledger!A:E", [[
+    nowTW(),
+    debtor,
+    creditor,
+    amount,
+    note
+  ]]);
+
+  let statusText = "";
+
+  if (newBalance > 0) {
+    statusText = `${target} 目前欠你 ${newBalance}`;
+  } else if (newBalance < 0) {
+    statusText = `你目前欠 ${target} ${Math.abs(newBalance)}`;
+  } else {
+    statusText = "目前雙方已結清";
   }
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard(
+      "帳務已記錄",
+      `${target} 與 ${actorName}
+
+前次金額：${balance}
+本次金額：${signedAmount}
+目前總額：${newBalance}
+
+${statusText}
+
+備註：${note || "無"}`
+    )
+  );
+}
 
   return null;
 }
