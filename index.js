@@ -81,11 +81,11 @@ async function handleEvent(event) {
     return client.replyMessage(event.replyToken, flexCard("功能", "/註冊\n/價格表\n/設定價格\n/menu"));
   }
 
-  return client.replyMessage(event.replyToken, {
-    type: "/狀態",
-    text: "Bot 正常運作"
-  });
+  if (msg === "/狀態") {
+  return client.replyMessage(event.replyToken, flexCard("智能浣熊 M 正常運作"));
 }
+
+return null;
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
