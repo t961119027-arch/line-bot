@@ -219,8 +219,8 @@ async function handleEvent(event) {
   return client.replyMessage(
     event.replyToken,
     flexCard("智能浣熊 M", "主選單", [
-      { label: "🧾 結算", text: "/結算 MING" },
-      { label: "🔍 查詢", text: "/查詢 MING" },
+      { label: "🧾 結算", text: "/結算 " },
+      { label: "🔍 查詢", text: "/查詢 " },
       { label: "💰 價格表", text: "/價格表" },
       { label: "➡ 更多", text: "/選單2" }
     ])
@@ -230,7 +230,7 @@ async function handleEvent(event) {
   return client.replyMessage(
     event.replyToken,
     flexCard("智能浣熊 M", "管理功能", [
-      { label: "⚙ 設定價格", text: "/設定價格 Nitro 1390 90" },
+      { label: "⚙ 設定價格", text: "/設定價格 " },
       { label: "📊 管理總表", text: "/管理總表" },
       { label: "💻 狀態", text: "/狀態" },
       { label: "⬅ 返回", text: "/選單" }
@@ -241,7 +241,7 @@ async function handleEvent(event) {
   if (msg === "/狀態") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("系統狀態", "Bot 正常運作")
+      flexCard("系統狀態", "智能浣熊 M 正常運作")
     );
   }
 
