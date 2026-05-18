@@ -73,8 +73,8 @@ async function handleEvent(event) {
 
   const msg = event.message.text.trim();
 
-  if (msg === "/menu") {
-    return client.replyMessage(event.replyToken, flexCard("工作室 ERP", "輸入 /功能 查看可用功能"));
+  if (msg === "/選單") {
+    return client.replyMessage(event.replyToken, flexCard("智能浣熊 M", "輸入 /功能 查看可用功能"));
   }
 
   if (msg === "/功能") {
@@ -82,7 +82,7 @@ async function handleEvent(event) {
   }
 
   return client.replyMessage(event.replyToken, {
-    type: "text",
+    type: "/狀態",
     text: "Bot 正常運作"
   });
 }
