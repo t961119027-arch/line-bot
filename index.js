@@ -53,6 +53,7 @@ function flexCard(title, body) {
   const now = new Date().toLocaleString("zh-TW", {
     timeZone: "Asia/Taipei"
   });
+
   return {
     type: "flex",
     altText: title,
@@ -69,6 +70,13 @@ function flexCard(title, body) {
             weight: "bold",
             size: "xl",
             color: "#D4AF37"
+          },
+          {
+            type: "text",
+            text: now,
+            size: "xs",
+            color: "#888888",
+            margin: "sm"
           },
           {
             type: "separator",
