@@ -458,7 +458,10 @@ async function handleEvent(event) {
   }
 }
 
-  const debtMatch = msg.match(/^(.+?)\\s+([+-])(\\d+)(?:\\s+(.+))?$/);
+  const debtMatch = msg.match(/^(.+?)\s*([+-])\s*(\d+)(?:\s+(.+))?$/);
+
+console.log("收到訊息:", msg);
+console.log("debtMatch結果:", debtMatch);
 
   if (debtMatch) {
     const target = debtMatch[1].trim();
