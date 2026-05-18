@@ -50,6 +50,9 @@ app.post("/webhook", line.middleware(config), async (req, res) => {
 });
 
 function flexCard(title, body) {
+  const now = new Date().toLocaleString("zh-TW", {
+    timeZone: "Asia/Taipei"
+  });
   return {
     type: "flex",
     altText: title,
