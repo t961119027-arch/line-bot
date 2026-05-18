@@ -333,7 +333,7 @@ async function handleEvent(event) {
       event.replyToken,
       flexCard(
         "結算模式",
-        `${employee}\n請貼多筆訂單:\n1390 2900049\n750 2900050`
+        `${employee}\n請貼多筆訂單:\n售價 8591編號`
       )
     );
   }  if (msg === "/管理總表") {
