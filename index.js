@@ -131,7 +131,7 @@ function flexCard(title, body, buttons = []) {
 
 function helpText() {
   return `
-/註冊 MH0928 名稱 admin|manager
+/註冊 密碼 名稱 admin|manager
 /選單
 /功能
 /狀態
@@ -142,8 +142,8 @@ function helpText() {
 /管理總表
 
 智慧帳務:
-小明 -4500
-小明 +2000
+MING -4500
+MING +2000
 `;
 }app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
@@ -169,7 +169,7 @@ async function handleEvent(event) {
     if (parts.length !== 4) {
       return client.replyMessage(event.replyToken, {
         type: "text",
-        text: "格式：/註冊 MH0928 名稱 admin|manager"
+        text: "格式：/註冊 密碼 名稱 admin|manager"
       });
     }
 
@@ -216,15 +216,27 @@ async function handleEvent(event) {
   }
 
   if (msg === "/選單") {
-    return client.replyMessage(
-      event.replyToken,
-      flexCard("工作室 ERP", "請選擇功能", [
-        { label: "功能", text: "/功能" },
-        { label: "價格表", text: "/價格表" },
-        { label: "狀態", text: "/狀態" }
-      ])
-    );
-  }
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("智能浣熊 M", "主選單", [
+      { label: "🧾 結算", text: "/結算 MING" },
+      { label: "🔍 查詢", text: "/查詢 MING" },
+      { label: "💰 價格表", text: "/價格表" },
+      { label: "➡ 更多", text: "/選單2" }
+    ])
+  );
+}
+  if (msg === "/選單2") {
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("智能浣熊 M", "管理功能", [
+      { label: "⚙ 設定價格", text: "/設定價格 Nitro 1390 90" },
+      { label: "📊 管理總表", text: "/管理總表" },
+      { label: "💻 狀態", text: "/狀態" },
+      { label: "⬅ 返回", text: "/選單" }
+    ])
+  );
+}
 
   if (msg === "/狀態") {
     return client.replyMessage(
