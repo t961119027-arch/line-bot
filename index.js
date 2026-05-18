@@ -393,8 +393,10 @@ async function handleEvent(event) {
     );
   }
 
-  if (activeSettlement.has(userId)) {
-    const employee = activeSettlement.get(userId);
+ if (activeSettlement.has(userId)) {
+  const employee = activeSettlement.get(userId);
+
+  try {
     const pricing = await getSheet("Pricing!A:C");
     const existingOrders = new Set((await getSheet("Sheet1!G:G")).flat());
 
@@ -437,20 +439,24 @@ async function handleEvent(event) {
       orderCount++;
     }
 
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        `${employee} 結算完成`,
+        `訂單：${orderCount}
+總營收：${totalRevenue}
+總抽成：${totalCommission}`
+      )
+    );
+
+  } finally {
     if (rows.length) {
       await appendSheet("Sheet1!A:G", rows);
     }
 
     activeSettlement.delete(userId);
-
-    return client.replyMessage(
-      event.replyToken,
-      flexCard(
-        `${employee} 結算完成`,
-        `訂單：${orderCount}\n總營收：${totalRevenue}\n總抽成：${totalCommission}`
-      )
-    );
   }
+}
 
   const debtMatch = msg.match(/^(.+?)\\s+([+-])(\\d+)(?:\\s+(.+))?$/);
 
