@@ -69,7 +69,7 @@ async function handleEvent(event) {
 
     await sheets.spreadsheets.values.append({
       spreadsheetId,
-      range: "Orders!A:G",
+      range: "Sheet1!A:G",
       valueInputOption: "USER_ENTERED",
       requestBody: {
         values: [[time, employee, product, price, commission, company, orderId]],
@@ -150,7 +150,7 @@ async function handleEvent(event) {
 async function getSheet() {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
-    range: "Orders!A2:G",
+    range: "Sheet1!A2:G",
   });
 
   return res.data.values || [];
