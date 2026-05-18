@@ -58,16 +58,32 @@ function flexCard(title, body) {
       body: {
         type: "box",
         layout: "vertical",
+        backgroundColor: "#111111",
         contents: [
-          { type: "text", text: title, weight: "bold", size: "xl" },
-          { type: "separator", margin: "md" },
-          { type: "text", text: body, wrap: true, margin: "md" }
+          {
+            type: "text",
+            text: title,
+            weight: "bold",
+            size: "xl",
+            color: "#D4AF37"
+          },
+          {
+            type: "separator",
+            margin: "md",
+            color: "#444444"
+          },
+          {
+            type: "text",
+            text: body,
+            wrap: true,
+            margin: "md",
+            color: "#FFFFFF"
+          }
         ]
       }
     }
   };
 }
-
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") return null;
 
@@ -84,7 +100,7 @@ async function handleEvent(event) {
   if (msg === "/狀態") {
   return client.replyMessage(
     event.replyToken,
-    flexCard("系統狀態", "Bot 正常運作")
+    flexCard("系統狀態", "智能浣熊 M 正常運作")
   );
 }
 
