@@ -27,8 +27,9 @@ const sheets = google.sheets({
 });
 
 const spreadsheetId = process.env.SPREADSHEET_ID;
+const REGISTER_CODE = "MH0928";
 
-// 暫存結算模式
+// 結算暫存
 const activeSettlement = new Map();
 
 app.post("/webhook", line.middleware(config), async (req, res) => {
@@ -55,9 +56,16 @@ async function appendSheet(range, values) {
     spreadsheetId,
     range,
     valueInputOption: "USER_ENTERED",
-    requestBody: {
-      values,
-    },
+    requestBody: { values },
+  });
+}
+
+async function updateSheet(range, values) {
+  await sheets.spreadsheets.values.update({
+    spreadsheetId,
+    range,
+    valueInputOption: "USER_ENTERED",
+    requestBody: { values },
   });
 }
 
@@ -70,6 +78,13 @@ async function getPricing() {
   return await getSheet("Pricing!A:C");
 }
 
+function reply(token, text) {
+  return client.replyMessage(token, {
+    type: "text",
+    text,
+  });
+}
+
 async function handleEvent(event) {
   if (event.type !== "message" || event.message.type !== "text") {
     return null;
@@ -78,21 +93,59 @@ async function handleEvent(event) {
   const msg = event.message.text.trim();
   const userId = event.source.userId;
 
+  // 註冊
+  if (msg.startsWith("/註冊 ")) {
+    const parts = msg.split(" ");
+
+    if (parts.length !== 4) {
+      return reply(
+        event.replyToken,
+        "格式：/註冊 MH0928 名稱 admin|manager"
+      );
+    }
+
+    const code = parts[1];
+    const name = parts[2];
+    const role = parts[3];
+
+    if (code !== REGISTER_CODE) {
+      return reply(event.replyToken, "註冊碼錯誤");
+    }
+
+    if (!["admin", "manager"].includes(role)) {
+      return reply(event.replyToken, "身份只能 admin 或 manager");
+    }
+
+    const users = await getSheet("Users!A:C");
+    const exists = users.find((r) => r[0] === userId);
+
+    if (exists) {
+      return reply(event.replyToken, "你已經註冊過");
+    }
+
+    await appendSheet("Users!A:C", [[userId, name, role]]);
+
+    return reply(
+      event.replyToken,
+      `註冊成功\n名稱：${name}\n身份：${role}`
+    );
+  }
+
+  // 權限檢查
   const user = await getUser(userId);
 
   if (!user) {
-    return reply(event.replyToken, "你沒有權限使用");
+    return reply(event.replyToken, "你沒有權限使用，請先註冊");
   }
 
-  const userName = user[1];
   const role = user[2];
 
-  // 查價格表
+  // 價格表
   if (msg === "/價格表") {
     const pricing = await getPricing();
 
     if (!pricing.length) {
-      return reply(event.replyToken, "價格表目前沒有資料");
+      return reply(event.replyToken, "價格表沒有資料");
     }
 
     let text = "【價格表】\n\n";
@@ -107,13 +160,16 @@ async function handleEvent(event) {
   // 設定價格
   if (msg.startsWith("/設定價格 ")) {
     if (role !== "admin") {
-      return reply(event.replyToken, "只有管理員可使用");
+      return reply(event.replyToken, "只有 admin 可設定價格");
     }
 
     const parts = msg.split(" ");
 
     if (parts.length !== 4) {
-      return reply(event.replyToken, "格式：/設定價格 商品 售價 抽成");
+      return reply(
+        event.replyToken,
+        "格式：/設定價格 商品 售價 抽成"
+      );
     }
 
     const product = parts[1];
@@ -128,16 +184,12 @@ async function handleEvent(event) {
 
     return reply(
       event.replyToken,
-      `價格設定完成\n${product} ${price} → ${commission}`
+      `設定成功\n${product} ${price} → ${commission}`
     );
   }
 
   // 開始結算
   if (msg.startsWith("/結算 ")) {
-    if (!["admin", "manager"].includes(role)) {
-      return reply(event.replyToken, "你沒有權限使用");
-    }
-
     const employee = msg.replace("/結算 ", "").trim();
 
     if (!employee) {
@@ -148,26 +200,73 @@ async function handleEvent(event) {
 
     return reply(
       event.replyToken,
-      `已進入 ${employee} 結算模式\n\n請貼上多筆資料：\n1390 2900049\n750 2900050\n\n輸入 /取消 可離開`
+      `已進入 ${employee} 結算模式
+
+請貼多筆：
+1390 2900049
+750 2900050
+
+輸入 /取消 離開`
     );
   }
 
   // 取消
   if (msg === "/取消") {
     activeSettlement.delete(userId);
-    return reply(event.replyToken, "已取消結算模式");
+    return reply(event.replyToken, "已取消");
+  }
+
+  // 管理總表
+  if (msg === "/管理總表") {
+    if (role !== "admin") {
+      return reply(event.replyToken, "只有 admin 可使用");
+    }
+
+    const rows = await getSheet("Sheet1!A:G");
+
+    let totalRevenue = 0;
+    let totalCommission = 0;
+    const employeeMap = {};
+
+    rows.slice(1).forEach((r) => {
+      const employee = r[1];
+      const revenue = Number(r[3]) || 0;
+      const commission = Number(r[4]) || 0;
+
+      totalRevenue += revenue;
+      totalCommission += commission;
+
+      if (!employeeMap[employee]) {
+        employeeMap[employee] = 0;
+      }
+
+      employeeMap[employee] += commission;
+    });
+
+    let text = "【管理總表】\n\n";
+
+    Object.keys(employeeMap).forEach((name) => {
+      text += `${name}：${employeeMap[name]}\n`;
+    });
+
+    text += `\n總營收：${totalRevenue}`;
+    text += `\n總抽成：${totalCommission}`;
+
+    return reply(event.replyToken, text);
   }
 
   // 結算模式
   if (activeSettlement.has(userId)) {
     const employee = activeSettlement.get(userId);
-
     const pricing = await getPricing();
     const existingOrders = await getSheet("Sheet1!G:G");
 
     const existingSet = new Set(existingOrders.flat());
 
-    const lines = msg.split("\n").map((v) => v.trim()).filter(Boolean);
+    const lines = msg
+      .split("\n")
+      .map((v) => v.trim())
+      .filter(Boolean);
 
     let totalCommission = 0;
     let totalRevenue = 0;
@@ -229,16 +328,16 @@ async function handleEvent(event) {
     let text =
       `【${employee} 結算完成】\n\n` +
       detail.join("\n") +
-      `\n\n共 ${successCount} 筆\n` +
-      `總營收：${totalRevenue}\n` +
-      `總抽成：${totalCommission}`;
+      `\n\n共 ${successCount} 筆` +
+      `\n總營收：${totalRevenue}` +
+      `\n總抽成：${totalCommission}`;
 
     if (duplicateOrders.length) {
       text += `\n\n重複訂單：\n${duplicateOrders.join("\n")}`;
     }
 
     if (unknownPrices.length) {
-      text += `\n\n找不到價格設定：\n${unknownPrices.join("\n")}`;
+      text += `\n\n找不到價格：\n${unknownPrices.join("\n")}`;
     }
 
     activeSettlement.delete(userId);
@@ -248,15 +347,8 @@ async function handleEvent(event) {
 
   return reply(
     event.replyToken,
-    "可用指令：\n/結算 員工名稱\n/價格表\n/取消"
+    "可用指令：\n/註冊\n/結算\n/價格表\n/管理總表\n/取消"
   );
-}
-
-function reply(token, text) {
-  return client.replyMessage(token, {
-    type: "text",
-    text,
-  });
 }
 
 const PORT = process.env.PORT || 10000;
