@@ -84,11 +84,12 @@ async function handleEvent(event) {
   if (msg === "/狀態") {
   return client.replyMessage(
     event.replyToken,
-    flexCard("系統狀態", "智能浣熊 M 正常運作")
+    flexCard("系統狀態", "Bot 正常運作")
   );
 }
 
 return null;
+}
 
 const PORT = process.env.PORT || 10000;
 app.listen(PORT, () => {
