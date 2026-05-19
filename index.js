@@ -647,55 +647,109 @@ ${statusText}
 }  
   
   if (msg === "/查詢") {
-    const configRow = await getGroupConfig(groupId);
+  const configRow = await getGroupConfig(groupId);
 
-    if (!configRow) {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("未設定", "請先設定 A / B")
-      );
-    }
-
-    const aName = configRow[1];
-    const bName = configRow[2];
-
-    const ledger = await getSheet("GroupLedger!A:F");
-
-    let balance = 0;
-    let lastChange = 0;
-
-    ledger.forEach(r => {
-      if (r[1] === groupId) {
-        lastChange = Number(r[4]) || 0;
-        balance = Number(r[5]) || 0;
-      }
-    });
-
-    let statusText = "";
-
-    if (balance > 0) {
-      statusText = `${bName} 目前欠 ${aName} ${formatMoney(balance)}`;
-    } else if (balance < 0) {
-      statusText = `${aName} 目前欠 ${bName} ${formatMoney(Math.abs(balance))}`;
-    } else {
-      statusText = "目前雙方已結清";
-    }
-
+  if (!configRow) {
     return client.replyMessage(
       event.replyToken,
-      flexCard(
-        "帳務查詢",
-        `A：${aName}
+      flexCard("未設定", "請先設定 A / B")
+    );
+  }
+
+  const aName = configRow[1];
+  const bName = configRow[2];
+
+  const ledger = await getSheet("GroupLedger!A:H");
+
+  const groupRows = ledger.filter(r => r[1] === groupId);
+
+  let balance = 0;
+  let lastFormula = "";
+  let lastNote = "";
+
+  if (groupRows.length) {
+    const last = groupRows[groupRows.length - 1];
+    balance = Number(last[6]) || 0;
+    lastFormula = last[4] || "";
+    lastNote = last[7] || "";
+  }
+
+  let statusText = "";
+
+  if (balance > 0) {
+    statusText = `${bName} 目前欠 ${aName} ${formatMoney(balance)}`;
+  } else if (balance < 0) {
+    statusText = `${aName} 目前欠 ${bName} ${formatMoney(Math.abs(balance))}`;
+  } else {
+    statusText = "目前雙方已結清";
+  }
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard(
+      "帳務查詢",
+      `A：${aName}
 B：${bName}
 
-前次金額：${formatMoney(balance - lastChange)}
-本次變動：${lastChange > 0 ? "+" : ""}${formatMoney(lastChange)}
+最後變動：${lastFormula}
+備註：${lastNote}
+
 目前總額：${formatMoney(balance)}
 
 ${statusText}`
-      )
+    )
+  );
+}
+  if (msg === "/清帳") {
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可清帳")
     );
   }
+
+  const configRow = await getGroupConfig(groupId);
+
+  if (!configRow) {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("未設定", "請先設定 A / B")
+    );
+  }
+
+  const aName = configRow[1];
+  const bName = configRow[2];
+
+  const ledger = await getSheet("GroupLedger!A:H");
+
+  let balance = 0;
+
+  ledger.forEach(r => {
+    if (r[1] === groupId) {
+      balance = Number(r[6]) || 0;
+    }
+  });
+
+  await appendSheet("GroupLedger!A:H", [[
+    nowTW(),
+    groupId,
+    aName,
+    bName,
+    "CLEAR",
+    -balance,
+    0,
+    "CLEARED"
+  ]]);
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard(
+      "清帳成功",
+      `清帳前：${formatMoney(balance)}
+目前總額：0`
+    )
+  );
+}
 
   if (msg.startsWith("/撤銷")) {
   if (role !== "admin") {
@@ -705,7 +759,7 @@ ${statusText}`
     );
   }
 
-  const ledger = await getSheet("GroupLedger!A:F");
+  const ledger = await getSheet("GroupLedger!A:H");
 
   const groupRows = ledger.filter(r => r[1] === groupId);
 
@@ -716,14 +770,28 @@ ${statusText}`
     );
   }
 
-  const remaining = ledger.filter((r, i) => {
-    const sameGroup = r[1] === groupId;
-    if (!sameGroup) return true;
+  groupRows.pop();
 
-    return i !== ledger.lastIndexOf(groupRows[groupRows.length - 1]);
+  const others = ledger.filter(r => r[1] !== groupId);
+
+  let running = 0;
+
+  const rebuilt = groupRows.map(r => {
+    running += Number(r[5]) || 0;
+
+    return [
+      r[0],
+      r[1],
+      r[2],
+      r[3],
+      r[4],
+      r[5],
+      running,
+      r[7] || ""
+    ];
   });
 
-  await updateSheet("GroupLedger!A:F", remaining);
+  await updateSheet("GroupLedger!A:H", [...others, ...rebuilt]);
 
   return client.replyMessage(
     event.replyToken,
