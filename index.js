@@ -262,70 +262,74 @@ async function handleEvent(event) {
   }
 
   if (msg.startsWith("/設定A ")) {
-    if (role !== "admin") {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("限制", "只有 admin 可設定")
-      );
-    }
-
-    const aName = msg.replace("/設定A ", "").trim();
-    const configRow = await getGroupConfig(groupId);
-
-    if (configRow) {
-      await updateSheet("GroupConfig!A:C", [[
-        groupId,
-        aName,
-        configRow[2] || ""
-      ]]);
-    } else {
-      await appendSheet("GroupConfig!A:C", [[
-        groupId,
-        aName,
-        ""
-      ]]);
-    }
-
-    await writeAudit(groupId, actorName, `設定A ${aName}`);
-
+  if (role !== "admin") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("設定完成", `A：${aName}`)
+      flexCard("限制", "只有 admin 可設定")
     );
   }
+
+  const aName = msg.replace("/設定A ", "").trim();
+  const rows = await getSheet("GroupConfig!A:C");
+
+  const idx = rows.findIndex(r => r[0] === groupId);
+
+  if (idx >= 0) {
+    rows[idx] = [
+      groupId,
+      aName,
+      rows[idx][2] || ""
+    ];
+
+    await updateSheet("GroupConfig!A:C", rows);
+  } else {
+    await appendSheet("GroupConfig!A:C", [[
+      groupId,
+      aName,
+      ""
+    ]]);
+  }
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("設定完成", `A：${aName}`)
+  );
+}
 
   if (msg.startsWith("/設定B ")) {
-    if (role !== "admin") {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("限制", "只有 admin 可設定")
-      );
-    }
-
-    const bName = msg.replace("/設定B ", "").trim();
-    const configRow = await getGroupConfig(groupId);
-
-    if (configRow) {
-      await updateSheet("GroupConfig!A:C", [[
-        groupId,
-        configRow[1] || "",
-        bName
-      ]]);
-    } else {
-      await appendSheet("GroupConfig!A:C", [[
-        groupId,
-        "",
-        bName
-      ]]);
-    }
-
-    await writeAudit(groupId, actorName, `設定B ${bName}`);
-
+  if (role !== "admin") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("設定完成", `B：${bName}`)
+      flexCard("限制", "只有 admin 可設定")
     );
   }
+
+  const bName = msg.replace("/設定B ", "").trim();
+  const rows = await getSheet("GroupConfig!A:C");
+
+  const idx = rows.findIndex(r => r[0] === groupId);
+
+  if (idx >= 0) {
+    rows[idx] = [
+      groupId,
+      rows[idx][1] || "",
+      bName
+    ];
+
+    await updateSheet("GroupConfig!A:C", rows);
+  } else {
+    await appendSheet("GroupConfig!A:C", [[
+      groupId,
+      "",
+      bName
+    ]]);
+  }
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("設定完成", `B：${bName}`)
+  );
+}
 
   if (msg === "/角色") {
     const configRow = await getGroupConfig(groupId);
@@ -567,24 +571,38 @@ ${statusText}`
   }
 
   if (msg.startsWith("/撤銷")) {
-    if (role !== "admin") {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("限制", "只有 admin 可撤銷")
-      );
-    }
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可撤銷")
+    );
+  }
 
-    const ledger = await getSheet("GroupLedger!A:F");
-    const filtered = ledger.filter(r => r[1] !== groupId);
+  const ledger = await getSheet("GroupLedger!A:F");
 
-    const groupRows = ledger.filter(r => r[1] === groupId);
+  const groupRows = ledger.filter(r => r[1] === groupId);
 
-    if (!groupRows.length) {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("撤銷失敗", "沒有可撤銷資料")
-      );
-    }
+  if (!groupRows.length) {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("撤銷失敗", "沒有可撤銷資料")
+    );
+  }
+
+  const remaining = ledger.filter((r, i) => {
+    const sameGroup = r[1] === groupId;
+    if (!sameGroup) return true;
+
+    return i !== ledger.lastIndexOf(groupRows[groupRows.length - 1]);
+  });
+
+  await updateSheet("GroupLedger!A:F", remaining);
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("撤銷成功", "已撤銷上一筆")
+  );
+}
 
     groupRows.pop();
 
