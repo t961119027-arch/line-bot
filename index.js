@@ -603,34 +603,6 @@ ${statusText}`
     flexCard("撤銷成功", "已撤銷上一筆")
   );
 }
-
-    groupRows.pop();
-
-    const rebuilt = [...filtered];
-    let running = 0;
-
-    groupRows.forEach(r => {
-      running += Number(r[4]) || 0;
-      rebuilt.push([
-        r[0],
-        r[1],
-        r[2],
-        r[3],
-        r[4],
-        running
-      ]);
-    });
-
-    await updateSheet("GroupLedger!A:F", rebuilt);
-
-    await writeAudit(groupId, actorName, "撤銷");
-
-    return client.replyMessage(
-      event.replyToken,
-      flexCard("撤銷成功", "已撤銷上一筆")
-    );
-  }
-
   if (msg.startsWith("/薪資 ")) {
     const target = msg.replace("/薪資 ", "").trim();
     const rows = await getSheet("Payroll!A:E");
