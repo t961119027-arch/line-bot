@@ -4,8 +4,6 @@ const line = require("@line/bot-sdk");
 const { google } = require("googleapis");
 
 const app = express();
-const REGISTER_CODE = "MH0928";
-const activeSettlement = new Map();
 
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
@@ -55,18 +53,14 @@ async function updateSheet(range, values) {
   });
 }
 
-async function getUser(userId) {
-  const users = await getSheet("Users!A:C");
-  return {
-    users,
-    row: users.find(r => r[0] === userId)
-  };
-}
-
 function nowTW() {
   return new Date().toLocaleString("zh-TW", {
     timeZone: "Asia/Taipei"
   });
+}
+
+function formatMoney(num) {
+  return Number(num || 0).toLocaleString("zh-TW");
 }
 
 function flexCard(title, body, buttons = []) {
@@ -75,6 +69,28 @@ function flexCard(title, body, buttons = []) {
     altText: title,
     contents: {
       type: "bubble",
+      hero: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#0A0A0A",
+        paddingAll: "20px",
+        contents: [
+          {
+            type: "text",
+            text: "智能浣熊 M",
+            color: "#D4AF37",
+            weight: "bold",
+            size: "xl"
+          },
+          {
+            type: "text",
+            text: nowTW(),
+            color: "#888888",
+            size: "xs",
+            margin: "sm"
+          }
+        ]
+      },
       body: {
         type: "box",
         layout: "vertical",
@@ -83,16 +99,9 @@ function flexCard(title, body, buttons = []) {
           {
             type: "text",
             text: title,
-            weight: "bold",
-            size: "xl",
-            color: "#D4AF37"
-          },
-          {
-            type: "text",
-            text: nowTW(),
-            size: "xs",
-            color: "#888888",
-            margin: "sm"
+            color: "#D4AF37",
+            size: "lg",
+            weight: "bold"
           },
           {
             type: "separator",
@@ -104,7 +113,8 @@ function flexCard(title, body, buttons = []) {
             text: body,
             wrap: true,
             margin: "md",
-            color: "#FFFFFF"
+            color: "#FFFFFF",
+            size: "sm"
           }
         ]
       },
@@ -113,6 +123,7 @@ function flexCard(title, body, buttons = []) {
             type: "box",
             layout: "vertical",
             spacing: "sm",
+            backgroundColor: "#111111",
             contents: buttons.map(btn => ({
               type: "button",
               style: "primary",
@@ -129,22 +140,27 @@ function flexCard(title, body, buttons = []) {
   };
 }
 
-function helpText() {
-  return `
-/註冊 密碼 名稱 admin|manager
-/選單
-/功能
-/狀態
-/結算 員工名稱
-/查詢 名稱
-/價格表
-/設定價格 商品 售價 抽成
-/管理總表
+async function getPermission(userId, groupId) {
+  const rows = await getSheet("Permissions!A:D");
+  return rows.find(r => r[0] === groupId && r[1] === userId);
+}
 
-智慧帳務:
-MING -4500
-MING +2000
-`;
+async function getGroupConfig(groupId) {
+  const rows = await getSheet("GroupConfig!A:C");
+  return rows.find(r => r[0] === groupId);
+}
+
+async function writeAudit(groupId, userName, action) {
+  await appendSheet("AuditLog!A:D", [[
+    nowTW(),
+    groupId,
+    userName,
+    action
+  ]]);
+}
+
+function requireGroup(event) {
+  return event.source.type === "group";
 }app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
@@ -162,81 +178,81 @@ async function handleEvent(event) {
 
   const msg = event.message.text.trim();
   const userId = event.source.userId;
+  const groupId = event.source.groupId || "";
 
-  if (msg.startsWith("/註冊 ")) {
-    const parts = msg.split(" ");
-
-    if (parts.length !== 4) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "格式：/註冊 密碼 名稱 admin|manager"
-      });
-    }
-
-    const code = parts[1];
-    const name = parts[2];
-    const role = parts[3];
-
-    if (code !== REGISTER_CODE) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "註冊碼錯誤"
-      });
-    }
-
-    if (!["admin", "manager"].includes(role)) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "身份只能 admin 或 manager"
-      });
-    }
-
-    const existing = await getUser(userId);
-
-    if (existing.row) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "你已經註冊過"
-      });
-    }
-
-    await appendSheet("Users!A:C", [[userId, name, role]]);
-
+  if (!requireGroup(event)) {
     return client.replyMessage(
       event.replyToken,
-      flexCard("註冊成功", `${name} (${role})`)
+      flexCard("限制", "此機器人僅限群組使用")
     );
   }
 
-  if (msg === "/功能") {
+  if (msg === "/綁定群組") {
+    const perms = await getSheet("Permissions!A:D");
+
+    const alreadyAdmin = perms.find(
+      r => r[0] === groupId && r[2] === "admin"
+    );
+
+    if (alreadyAdmin) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("限制", "此群組已綁定")
+      );
+    }
+
+    const profile = await client.getGroupMemberProfile(groupId, userId);
+
+    await appendSheet("Permissions!A:D", [[
+      groupId,
+      userId,
+      "admin",
+      profile.displayName
+    ]]);
+
+    await writeAudit(groupId, profile.displayName, "綁定群組");
+
     return client.replyMessage(
       event.replyToken,
-      flexCard("功能列表", helpText())
+      flexCard("綁定成功", `${profile.displayName} 已成為 admin`)
     );
   }
+
+  const permission = await getPermission(userId, groupId);
+
+  if (!permission) {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("無權限", "你未被授權使用")
+    );
+  }
+
+  const role = permission[2];
+  const actorName = permission[3];
 
   if (msg === "/選單") {
-  return client.replyMessage(
-    event.replyToken,
-    flexCard("智能浣熊 M", "主選單", [
-      { label: "🧾 結算", text: "/結算 " },
-      { label: "🔍 查詢", text: "/查詢 " },
-      { label: "💰 價格表", text: "/價格表" },
-      { label: "➡ 更多", text: "/選單2" }
-    ])
-  );
-}
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("工作室控制台", "主選單", [
+        { label: "💳 帳務", text: "/查詢" },
+        { label: "💰 價格表", text: "/價格表" },
+        { label: "👤 個人財務", text: "/我的帳" },
+        { label: "➡ 更多", text: "/選單2" }
+      ])
+    );
+  }
+
   if (msg === "/選單2") {
-  return client.replyMessage(
-    event.replyToken,
-    flexCard("智能浣熊 M", "管理功能", [
-      { label: "⚙ 設定價格", text: "/設定價格 " },
-      { label: "📊 管理總表", text: "/管理總表" },
-      { label: "💻 狀態", text: "/狀態" },
-      { label: "⬅ 返回", text: "/選單" }
-    ])
-  );
-}
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("管理中心", "進階功能", [
+        { label: "🏢 公司金流", text: "/金流" },
+        { label: "📊 薪資排行", text: "/薪資排行" },
+        { label: "⚙ 狀態", text: "/狀態" },
+        { label: "⬅ 返回", text: "/選單" }
+      ])
+    );
+  }
 
   if (msg === "/狀態") {
     return client.replyMessage(
@@ -245,49 +261,103 @@ async function handleEvent(event) {
     );
   }
 
-  const { users, row: user } = await getUser(userId);
-
-  if (!user) {
-    return client.replyMessage(event.replyToken, {
-      type: "text",
-      text: "請先註冊"
-    });
-  }
-
-  const actorName = user[1];
-  const role = user[2];
-
-  if (msg.startsWith("/removeadmin ")) {
+  if (msg.startsWith("/設定A ")) {
     if (role !== "admin") {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "無權限"
-      });
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("限制", "只有 admin 可設定")
+      );
     }
 
-    const targetName = msg.replace("/removeadmin ", "").trim();
+    const aName = msg.replace("/設定A ", "").trim();
+    const configRow = await getGroupConfig(groupId);
 
-    const updated = users.map(r => {
-      if (r[1] === targetName && r[2] === "admin") {
-        return [r[0], r[1], "manager"];
-      }
-      return r;
-    });
+    if (configRow) {
+      await updateSheet("GroupConfig!A:C", [[
+        groupId,
+        aName,
+        configRow[2] || ""
+      ]]);
+    } else {
+      await appendSheet("GroupConfig!A:C", [[
+        groupId,
+        aName,
+        ""
+      ]]);
+    }
 
-    await updateSheet("Users!A:C", updated);
+    await writeAudit(groupId, actorName, `設定A ${aName}`);
 
     return client.replyMessage(
       event.replyToken,
-      flexCard("權限更新", `${targetName} 已降為 manager`)
+      flexCard("設定完成", `A：${aName}`)
     );
   }
 
+  if (msg.startsWith("/設定B ")) {
+    if (role !== "admin") {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("限制", "只有 admin 可設定")
+      );
+    }
+
+    const bName = msg.replace("/設定B ", "").trim();
+    const configRow = await getGroupConfig(groupId);
+
+    if (configRow) {
+      await updateSheet("GroupConfig!A:C", [[
+        groupId,
+        configRow[1] || "",
+        bName
+      ]]);
+    } else {
+      await appendSheet("GroupConfig!A:C", [[
+        groupId,
+        "",
+        bName
+      ]]);
+    }
+
+    await writeAudit(groupId, actorName, `設定B ${bName}`);
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("設定完成", `B：${bName}`)
+    );
+  }
+
+  if (msg === "/角色") {
+    const configRow = await getGroupConfig(groupId);
+
+    if (!configRow) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("未設定", "請先設定 A / B")
+      );
+    }
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "群組角色",
+        `A：${configRow[1]}\nB：${configRow[2]}`
+      )
+    );
+  }
   if (msg === "/價格表") {
     const pricing = await getSheet("Pricing!A:C");
 
-    const text = pricing.length
-      ? pricing.map(r => `${r[0]} ${r[1]} → ${r[2]}`).join("\n")
-      : "沒有資料";
+    if (!pricing.length) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("價格表", "尚未設定價格")
+      );
+    }
+
+    const text = pricing
+      .map(r => `${r[0]}｜${formatMoney(r[1])}｜抽成 ${formatMoney(r[2])}`)
+      .join("\n");
 
     return client.replyMessage(
       event.replyToken,
@@ -297,236 +367,395 @@ async function handleEvent(event) {
 
   if (msg.startsWith("/設定價格 ")) {
     if (role !== "admin") {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "只有 admin 可設定"
-      });
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("限制", "只有 admin 可設定價格")
+      );
     }
 
     const parts = msg.split(" ");
 
     if (parts.length !== 4) {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "格式：/設定價格 商品 售價 抽成"
-      });
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("格式錯誤", "/設定價格 商品 售價 抽成")
+      );
     }
 
-    await appendSheet("Pricing!A:C", [[
+    const product = parts[1];
+    const price = Number(parts[2]);
+    const commission = Number(parts[3]);
+
+    const pricing = await getSheet("Pricing!A:C");
+    const existingIndex = pricing.findIndex(r => Number(r[1]) === price);
+
+    if (existingIndex >= 0) {
+      const oldCommission = pricing[existingIndex][2];
+
+      pricing[existingIndex] = [product, price, commission];
+      await updateSheet("Pricing!A:C", pricing);
+
+      await writeAudit(groupId, actorName, `更新價格 ${price}`);
+
+      return client.replyMessage(
+        event.replyToken,
+        flexCard(
+          "價格已更新",
+          `商品：${product}
+售價：${formatMoney(price)}
+舊抽成：${formatMoney(oldCommission)}
+新抽成：${formatMoney(commission)}`
+        )
+      );
+    }
+
+    await appendSheet("Pricing!A:C", [[product, price, commission]]);
+
+    await writeAudit(groupId, actorName, `新增價格 ${price}`);
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "價格新增",
+        `${product}
+售價：${formatMoney(price)}
+抽成：${formatMoney(commission)}`
+      )
+    );
+  }
+
+  if (msg.startsWith("/刪除價格 ")) {
+    if (role !== "admin") {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("限制", "只有 admin 可刪除")
+      );
+    }
+
+    const price = Number(msg.replace("/刪除價格 ", "").trim());
+    const pricing = await getSheet("Pricing!A:C");
+
+    const filtered = pricing.filter(r => Number(r[1]) !== price);
+
+    await updateSheet("Pricing!A:C", filtered);
+
+    await writeAudit(groupId, actorName, `刪除價格 ${price}`);
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("刪除完成", `已刪除 ${formatMoney(price)}`)
+    );
+  }
+
+  const configRow = await getGroupConfig(groupId);
+
+  if (configRow) {
+    const aName = configRow[1];
+    const bName = configRow[2];
+
+    const actionMatch = msg.match(/^(完成|收款|退款)([+-])(\d+)$/);
+
+    if (actionMatch) {
+      const action = actionMatch[1];
+      const amount = Number(actionMatch[3]);
+
+      let signedAmount = 0;
+
+      if (action === "完成") signedAmount = amount;
+      if (action === "收款") signedAmount = -amount;
+      if (action === "退款") signedAmount = -amount;
+
+      const ledger = await getSheet("GroupLedger!A:F");
+
+      let balance = 0;
+      let lastChange = 0;
+
+      ledger.forEach(r => {
+        if (r[1] === groupId) {
+          balance = Number(r[5]) || 0;
+          lastChange = Number(r[4]) || 0;
+        }
+      });
+
+      const newBalance = balance + signedAmount;
+
+      await appendSheet("GroupLedger!A:F", [[
+        nowTW(),
+        groupId,
+        aName,
+        bName,
+        signedAmount,
+        newBalance
+      ]]);
+
+      await writeAudit(groupId, actorName, `${action} ${amount}`);
+
+      let statusText = "";
+
+      if (newBalance > 0) {
+        statusText = `${bName} 目前欠你 ${formatMoney(newBalance)}`;
+      } else if (newBalance < 0) {
+        statusText = `你目前欠 ${bName} ${formatMoney(Math.abs(newBalance))}`;
+      } else {
+        statusText = "目前雙方已結清";
+      }
+
+      return client.replyMessage(
+        event.replyToken,
+        flexCard(
+          "帳務更新",
+          `A：${aName}
+B：${bName}
+
+前次金額：${formatMoney(balance)}
+本次變動：${signedAmount > 0 ? "+" : ""}${formatMoney(signedAmount)}
+目前總額：${formatMoney(newBalance)}
+
+${statusText}`
+        )
+      );
+    }
+  }  if (msg === "/查詢") {
+    const configRow = await getGroupConfig(groupId);
+
+    if (!configRow) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("未設定", "請先設定 A / B")
+      );
+    }
+
+    const aName = configRow[1];
+    const bName = configRow[2];
+
+    const ledger = await getSheet("GroupLedger!A:F");
+
+    let balance = 0;
+    let lastChange = 0;
+
+    ledger.forEach(r => {
+      if (r[1] === groupId) {
+        lastChange = Number(r[4]) || 0;
+        balance = Number(r[5]) || 0;
+      }
+    });
+
+    let statusText = "";
+
+    if (balance > 0) {
+      statusText = `${bName} 目前欠你 ${formatMoney(balance)}`;
+    } else if (balance < 0) {
+      statusText = `你目前欠 ${bName} ${formatMoney(Math.abs(balance))}`;
+    } else {
+      statusText = "目前雙方已結清";
+    }
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "帳務查詢",
+        `A：${aName}
+B：${bName}
+
+前次金額：${formatMoney(balance - lastChange)}
+本次變動：${lastChange > 0 ? "+" : ""}${formatMoney(lastChange)}
+目前總額：${formatMoney(balance)}
+
+${statusText}`
+      )
+    );
+  }
+
+  if (msg.startsWith("/撤銷")) {
+    if (role !== "admin") {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("限制", "只有 admin 可撤銷")
+      );
+    }
+
+    const ledger = await getSheet("GroupLedger!A:F");
+    const filtered = ledger.filter(r => r[1] !== groupId);
+
+    const groupRows = ledger.filter(r => r[1] === groupId);
+
+    if (!groupRows.length) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("撤銷失敗", "沒有可撤銷資料")
+      );
+    }
+
+    groupRows.pop();
+
+    const rebuilt = [...filtered];
+    let running = 0;
+
+    groupRows.forEach(r => {
+      running += Number(r[4]) || 0;
+      rebuilt.push([
+        r[0],
+        r[1],
+        r[2],
+        r[3],
+        r[4],
+        running
+      ]);
+    });
+
+    await updateSheet("GroupLedger!A:F", rebuilt);
+
+    await writeAudit(groupId, actorName, "撤銷");
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("撤銷成功", "已撤銷上一筆")
+    );
+  }
+
+  if (msg.startsWith("/薪資 ")) {
+    const target = msg.replace("/薪資 ", "").trim();
+    const rows = await getSheet("Payroll!A:E");
+
+    let count = 0;
+    let total = 0;
+
+    rows.forEach(r => {
+      if (r[1] === target) {
+        count++;
+        total += Number(r[4]) || 0;
+      }
+    });
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        `${target} 薪資`,
+        `訂單數：${count}
+實領：${formatMoney(total)}`
+      )
+    );
+  }
+
+  if (msg === "/薪資排行") {
+    const rows = await getSheet("Payroll!A:E");
+    const map = {};
+
+    rows.forEach(r => {
+      const name = r[1];
+      const amount = Number(r[4]) || 0;
+      map[name] = (map[name] || 0) + amount;
+    });
+
+    const ranking = Object.entries(map)
+      .sort((a, b) => b[1] - a[1])
+      .slice(0, 10)
+      .map((r, i) => `${i + 1}. ${r[0]} ${formatMoney(r[1])}`)
+      .join("\n");
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("薪資排行", ranking || "無資料")
+    );
+  }
+
+  if (msg.startsWith("/記帳 ")) {
+    const parts = msg.split(" ");
+
+    if (parts.length < 4) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("格式錯誤", "/記帳 收入|支出 項目 金額")
+      );
+    }
+
+    const type = parts[1];
+    const item = parts[2];
+    const amount = Number(parts[3]);
+
+    await appendSheet("PersonalFinance!A:E", [[
+      nowTW(),
+      actorName,
+      type,
+      item,
+      amount
+    ]]);
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("個人記帳", `${type} ${item} ${formatMoney(amount)}`)
+    );
+  }
+
+  if (msg === "/我的帳") {
+    const rows = await getSheet("PersonalFinance!A:E");
+
+    let income = 0;
+    let expense = 0;
+
+    rows.forEach(r => {
+      if (r[1] === actorName) {
+        if (r[2] === "收入") income += Number(r[4]) || 0;
+        if (r[2] === "支出") expense += Number(r[4]) || 0;
+      }
+    });
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "我的財務",
+        `收入：${formatMoney(income)}
+支出：${formatMoney(expense)}
+淨額：${formatMoney(income - expense)}`
+      )
+    );
+  }
+
+  if (msg.startsWith("/公司 ")) {
+    const parts = msg.split(" ");
+
+    if (parts.length < 4) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("格式錯誤", "/公司 收入|支出 項目 金額")
+      );
+    }
+
+    await appendSheet("CompanyFinance!A:E", [[
+      nowTW(),
+      actorName,
       parts[1],
-      Number(parts[2]),
+      parts[2],
       Number(parts[3])
     ]]);
 
     return client.replyMessage(
       event.replyToken,
-      flexCard("價格設定完成", `${parts[1]} ${parts[2]} → ${parts[3]}`)
+      flexCard("公司金流", "已記錄")
     );
   }
 
-  if (msg.startsWith("/結算 ")) {
-    const employee = msg.replace("/結算 ", "").trim();
+  if (msg === "/金流") {
+    const rows = await getSheet("CompanyFinance!A:E");
 
-    activeSettlement.set(userId, employee);
-
-    return client.replyMessage(
-      event.replyToken,
-      flexCard(
-        "結算模式",
-        `${employee}\n請貼多筆訂單:\n售價 8591編號`
-      )
-    );
-  }  if (msg === "/管理總表") {
-    if (role !== "admin") {
-      return client.replyMessage(event.replyToken, {
-        type: "text",
-        text: "只有 admin 可用"
-      });
-    }
-
-    const rows = await getSheet("Sheet1!A:G");
-
-    let totalRevenue = 0;
-    let totalCommission = 0;
+    let income = 0;
+    let expense = 0;
 
     rows.forEach(r => {
-      totalRevenue += Number(r[3]) || 0;
-      totalCommission += Number(r[4]) || 0;
+      if (r[2] === "收入") income += Number(r[4]) || 0;
+      if (r[2] === "支出") expense += Number(r[4]) || 0;
     });
 
     return client.replyMessage(
       event.replyToken,
       flexCard(
-        "管理總表",
-        `總營收：${totalRevenue}\n總抽成：${totalCommission}`
+        "公司金流",
+        `收入：${formatMoney(income)}
+支出：${formatMoney(expense)}
+淨利：${formatMoney(income - expense)}`
       )
     );
   }
-
-  if (msg.startsWith("/查詢 ")) {
-    const target = msg.replace("/查詢 ", "").trim();
-    const ledger = await getSheet("Ledger!A:E");
-
-    let owedToYou = 0;
-    let youOwe = 0;
-
-    ledger.forEach(r => {
-      const debtor = r[1];
-      const creditor = r[2];
-      const amount = Number(r[3]) || 0;
-
-      if (debtor === target && creditor === actorName) {
-        owedToYou += amount;
-      }
-
-      if (debtor === actorName && creditor === target) {
-        youOwe += amount;
-      }
-    });
-
-    return client.replyMessage(
-      event.replyToken,
-      flexCard(
-        `與 ${target} 帳務`,
-        `${target} 欠你：${owedToYou}\n你欠對方：${youOwe}\n淨額：${owedToYou - youOwe}`
-      )
-    );
-  }
-
- if (activeSettlement.has(userId)) {
-  const employee = activeSettlement.get(userId);
-
-  try {
-    const pricing = await getSheet("Pricing!A:C");
-    const existingOrders = new Set((await getSheet("Sheet1!G:G")).flat());
-
-    const lines = msg.split("\n").map(v => v.trim()).filter(Boolean);
-
-    let totalRevenue = 0;
-    let totalCommission = 0;
-    let orderCount = 0;
-    const rows = [];
-
-    for (const line of lines) {
-      const parts = line.split(/\s+/);
-
-      if (parts.length < 2) continue;
-
-      const price = Number(parts[0]);
-      const orderId = parts[1];
-
-      if (!price || !orderId) continue;
-      if (existingOrders.has(orderId)) continue;
-
-      const matched = pricing.find(r => Number(r[1]) === price);
-
-      if (!matched) continue;
-
-      const commission = Number(matched[2]);
-
-      rows.push([
-        nowTW(),
-        employee,
-        matched[0],
-        price,
-        commission,
-        price - commission,
-        orderId
-      ]);
-
-      totalRevenue += price;
-      totalCommission += commission;
-      orderCount++;
-    }
-
-    return client.replyMessage(
-      event.replyToken,
-      flexCard(
-        `${employee} 結算完成`,
-        `訂單：${orderCount}
-總營收：${totalRevenue}
-總抽成：${totalCommission}`
-      )
-    );
-
-  } finally {
-    if (rows.length) {
-      await appendSheet("Sheet1!A:G", rows);
-    }
-
-    activeSettlement.delete(userId);
-  }
-}
-
-  const debtMatch = msg.match(/^(.+?)\s*([+-])\s*(\d+)(?:\s+(.+))?$/);
-
-console.log("收到訊息:", msg);
-console.log("debtMatch結果:", debtMatch);
-
-  if (debtMatch) {
-  const target = debtMatch[1].trim();
-  const sign = debtMatch[2];
-  const amount = Number(debtMatch[3]);
-  const note = debtMatch[4] || "";
-
-  const debtor = sign === "-" ? target : actorName;
-  const creditor = sign === "-" ? actorName : target;
-
-  const ledger = await getSheet("Ledger!A:E");
-
-  let balance = 0;
-
-  ledger.forEach(r => {
-    const d = r[1];
-    const c = r[2];
-    const amt = Number(r[3]) || 0;
-
-    if (d === target && c === actorName) {
-      balance += amt;
-    }
-
-    if (d === actorName && c === target) {
-      balance -= amt;
-    }
-  });
-
-  const signedAmount = sign === "-" ? amount : -amount;
-  const newBalance = balance + signedAmount;
-
-  await appendSheet("Ledger!A:E", [[
-    nowTW(),
-    debtor,
-    creditor,
-    amount,
-    note
-  ]]);
-
-  let statusText = "";
-
-  if (newBalance > 0) {
-    statusText = `${target} 目前欠你 ${newBalance}`;
-  } else if (newBalance < 0) {
-    statusText = `你目前欠 ${target} ${Math.abs(newBalance)}`;
-  } else {
-    statusText = "目前雙方已結清";
-  }
-
-  return client.replyMessage(
-    event.replyToken,
-    flexCard(
-      "帳務已記錄",
-      `${target} 與 ${actorName}
-
-前次金額：${balance}
-本次金額：${signedAmount}
-目前總額：${newBalance}
-
-${statusText}
-
-備註：${note || "無"}`
-    )
-  );
-}
 
   return null;
 }
@@ -534,5 +763,5 @@ ${statusText}
 const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
-  console.log("ERP Bot V6 running");
+  console.log("Smart Raccoon M V7 running");
 });
