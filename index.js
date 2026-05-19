@@ -261,6 +261,44 @@ const actorName = permission ? permission[3] : "";
       flexCard("系統狀態", "智能浣熊 M 正常運作")
     );
   }
+  if (msg.startsWith("/設定 ")) {
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可設定")
+    );
+  }
+
+  const parts = msg.replace("/設定 ", "").trim().split(" ");
+
+  if (parts.length < 2) {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("格式錯誤", "/設定 A名稱 B名稱")
+    );
+  }
+
+  const aName = parts[0];
+  const bName = parts[1];
+
+  const rows = await getSheet("GroupConfig!A:C");
+  const idx = rows.findIndex(r => r[0] === groupId);
+
+  if (idx >= 0) {
+    rows[idx] = [groupId, aName, bName];
+    await updateSheet("GroupConfig!A:C", rows);
+  } else {
+    await appendSheet("GroupConfig!A:C", [[groupId, aName, bName]]);
+  }
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard(
+      "設定完成",
+      `A：${aName}\nB：${bName}`
+    )
+  );
+}
 
   if (msg.startsWith("/設定A ")) {
   if (role !== "admin") {
