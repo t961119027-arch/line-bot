@@ -220,15 +220,16 @@ async function handleEvent(event) {
 
   const permission = await getPermission(userId, groupId);
 
-  if (!permission) {
-    return client.replyMessage(
-      event.replyToken,
-      flexCard("無權限", "你未被授權使用")
-    );
-  }
+const needsPermission =
+  msg.startsWith("/") ||
+  /^(完成|收款|退款)([+-])(\d+)$/.test(msg);
 
-  const role = permission[2];
-  const actorName = permission[3];
+if (needsPermission && !permission) {
+  return null;
+}
+
+const role = permission ? permission[2] : "";
+const actorName = permission ? permission[3] : "";
 
   if (msg === "/選單") {
     return client.replyMessage(
