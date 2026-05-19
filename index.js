@@ -172,6 +172,17 @@ function requireGroup(event) {
 });
 
 async function handleEvent(event) {
+  if (event.webhookEventId) {
+  if (processedEvents.has(event.webhookEventId)) {
+    return null;
+  }
+
+  processedEvents.add(event.webhookEventId);
+
+  setTimeout(() => {
+    processedEvents.delete(event.webhookEventId);
+  }, 600000);
+}
   if (event.type !== "message" || event.message.type !== "text") {
     return null;
   }
