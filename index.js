@@ -553,72 +553,100 @@ if (msg.startsWith("/拔權 ")) {
   const configRow = await getGroupConfig(groupId);
 
   if (configRow) {
-    const aName = configRow[1];
-    const bName = configRow[2];
+  const aName = configRow[1];
+  const bName = configRow[2];
 
-    const actionMatch = msg.match(/^(完成|收款|退款)([+-])(\d+)$/);
+  const actionMatch = msg.match(/^(完成|收款|退款)([+-])([^\s]+)(?:\s+(.*))?$/);
 
-    if (actionMatch) {
-      const action = actionMatch[1];
-      const amount = Number(actionMatch[3]);
+  if (actionMatch) {
+    const action = actionMatch[1];
+    const sign = actionMatch[2];
+    const rawFormula = actionMatch[3];
+    const note = actionMatch[4] || "";
 
-      let signedAmount = 0;
+    let amount = 0;
 
-      if (action === "完成") signedAmount = amount;
-      if (action === "收款") signedAmount = -amount;
-      if (action === "退款") signedAmount = -amount;
+    if (rawFormula.includes("*")) {
+      const parts = rawFormula.split("*").map(v => Number(v.trim()));
 
-      const ledger = await getSheet("GroupLedger!A:F");
-
-      let balance = 0;
-      let lastChange = 0;
-
-      ledger.forEach(r => {
-        if (r[1] === groupId) {
-          balance = Number(r[5]) || 0;
-          lastChange = Number(r[4]) || 0;
-        }
-      });
-
-      const newBalance = balance + signedAmount;
-
-      await appendSheet("GroupLedger!A:F", [[
-        nowTW(),
-        groupId,
-        aName,
-        bName,
-        signedAmount,
-        newBalance
-      ]]);
-
-      await writeAudit(groupId, actorName, `${action} ${amount}`);
-
-      let statusText = "";
-
-      if (newBalance > 0) {
-        statusText = `${bName} 目前欠 ${aName} ${formatMoney(newBalance)}`;
-      } else if (newBalance < 0) {
-        statusText = `${aName} 目前欠 ${bName} ${formatMoney(Math.abs(newBalance))}`;
-      } else {
-        statusText = "目前雙方已結清";
+      if (parts.some(isNaN)) {
+        return client.replyMessage(
+          event.replyToken,
+          flexCard("格式錯誤", "算式格式錯誤")
+        );
       }
 
-      return client.replyMessage(
-        event.replyToken,
-        flexCard(
-          "帳務更新",
-          `A：${aName}
+      amount = parts.reduce((a, b) => a * b, 1);
+    } else {
+      amount = Number(rawFormula);
+
+      if (isNaN(amount)) {
+        return client.replyMessage(
+          event.replyToken,
+          flexCard("格式錯誤", "金額格式錯誤")
+        );
+      }
+    }
+
+    let signedAmount = 0;
+
+    if (action === "完成") signedAmount = amount;
+    if (action === "收款") signedAmount = -amount;
+    if (action === "退款") signedAmount = -amount;
+
+    const ledger = await getSheet("GroupLedger!A:H");
+
+    let balance = 0;
+
+    ledger.forEach(r => {
+      if (r[1] === groupId) {
+        balance = Number(r[6]) || 0;
+      }
+    });
+
+    const newBalance = balance + signedAmount;
+
+    await appendSheet("GroupLedger!A:H", [[
+      nowTW(),
+      groupId,
+      aName,
+      bName,
+      `${sign}${rawFormula}`,
+      signedAmount,
+      newBalance,
+      note
+    ]]);
+
+    let statusText = "";
+
+    if (newBalance > 0) {
+      statusText = `${bName} 目前欠 ${aName} ${formatMoney(newBalance)}`;
+    } else if (newBalance < 0) {
+      statusText = `${aName} 目前欠 ${bName} ${formatMoney(Math.abs(newBalance))}`;
+    } else {
+      statusText = "目前雙方已結清";
+    }
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "帳務更新",
+        `A：${aName}
 B：${bName}
 
 前次金額：${formatMoney(balance)}
-本次變動：${signedAmount > 0 ? "+" : ""}${formatMoney(signedAmount)}
+本次變動：${sign}${rawFormula} = ${formatMoney(signedAmount)}
 目前總額：${formatMoney(newBalance)}
 
-${statusText}`
-        )
-      );
-    }
-  }  if (msg === "/查詢") {
+${statusText}
+
+備註：${note || ""}`
+      )
+    );
+  }
+}  
+  
+  if (msg === "/查詢") {
     const configRow = await getGroupConfig(groupId);
 
     if (!configRow) {
