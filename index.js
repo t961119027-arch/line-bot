@@ -596,9 +596,9 @@ if (msg.startsWith("/拔權 ")) {
       let statusText = "";
 
       if (newBalance > 0) {
-        statusText = `${bName} 目前欠你 ${formatMoney(newBalance)}`;
+        statusText = `${bName} 目前欠 ${aName} ${formatMoney(newBalance)}`;
       } else if (newBalance < 0) {
-        statusText = `你目前欠 ${bName} ${formatMoney(Math.abs(newBalance))}`;
+        statusText = `${aName} 目前欠 ${bName} ${formatMoney(Math.abs(newBalance))}`;
       } else {
         statusText = "目前雙方已結清";
       }
