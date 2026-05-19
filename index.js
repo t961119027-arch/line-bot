@@ -775,7 +775,7 @@ ${statusText}`
   );
 }
 
-  if (msg.startsWith("/撤銷")) {
+  if (msg.startsWith("/撤銷") || msg.startsWith("/撤回")) {
   if (role !== "admin") {
     return client.replyMessage(
       event.replyToken,
@@ -794,28 +794,30 @@ ${statusText}`
     );
   }
 
-  groupRows.pop();
+  // 找最後一筆這個群組資料
+  let removed = false;
 
-  const others = ledger.filter(r => r[1] !== groupId);
+  const remaining = ledger.filter(r => {
+    if (!removed && r[1] === groupId) {
+      const isLast =
+        r === groupRows[groupRows.length - 1];
 
-  let running = 0;
+      if (isLast) {
+        removed = true;
+        return false;
+      }
+    }
 
-  const rebuilt = groupRows.map(r => {
-    running += Number(r[5]) || 0;
-
-    return [
-      r[0],
-      r[1],
-      r[2],
-      r[3],
-      r[4],
-      r[5],
-      running,
-      r[7] || ""
-    ];
+    return true;
   });
 
-  await updateSheet("GroupLedger!A:H", [...others, ...rebuilt]);
+  // 先清空整個 sheet
+  await updateSheet("GroupLedger!A:H", []);
+
+  // 再重寫
+  if (remaining.length) {
+    await updateSheet("GroupLedger!A:H", remaining);
+  }
 
   return client.replyMessage(
     event.replyToken,
