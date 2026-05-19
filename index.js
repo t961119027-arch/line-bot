@@ -232,8 +232,11 @@ async function handleEvent(event) {
   const permission = await getPermission(userId, groupId);
 
 const needsPermission =
-  msg.startsWith("/") ||
-  /^(完成|收款|退款)([+-])(\d+)$/.test(msg);
+  msg !== "/綁定群組" &&
+  (
+    msg.startsWith("/") ||
+    /^(完成|收款|退款)([+-])/.test(msg)
+  );
 
 if (needsPermission && !permission) {
   return null;
