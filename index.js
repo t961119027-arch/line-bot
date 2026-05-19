@@ -350,6 +350,66 @@ const actorName = permission ? permission[3] : "";
       )
     );
   }
+  
+  if (msg.startsWith("/授權 ")) {
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可授權")
+    );
+  }
+
+  const targetName = msg.replace("/授權 ", "").trim();
+
+  const rows = await getSheet("Permissions!A:D");
+
+  const exists = rows.find(
+    r => r[0] === groupId && r[3] === targetName
+  );
+
+  if (exists) {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("提示", `${targetName} 已有權限`)
+    );
+  }
+
+  await appendSheet("Permissions!A:D", [[
+    groupId,
+    `manual-${Date.now()}`,
+    "staff",
+    targetName
+  ]]);
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("授權成功", `${targetName} 已授權`)
+  );
+}
+
+if (msg.startsWith("/拔權 ")) {
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可拔權")
+    );
+  }
+
+  const targetName = msg.replace("/拔權 ", "").trim();
+
+  const rows = await getSheet("Permissions!A:D");
+
+  const filtered = rows.filter(
+    r => !(r[0] === groupId && r[3] === targetName)
+  );
+
+  await updateSheet("Permissions!A:D", filtered);
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("拔權成功", `${targetName} 已移除`)
+  );
+}
   if (msg === "/價格表") {
     const pricing = await getSheet("Pricing!A:C");
 
