@@ -172,17 +172,7 @@ function requireGroup(event) {
 });
 
 async function handleEvent(event) {
-  if (event.webhookEventId) {
-  if (processedEvents.has(event.webhookEventId)) {
-    return null;
-  }
-
-  processedEvents.add(event.webhookEventId);
-
-  setTimeout(() => {
-    processedEvents.delete(event.webhookEventId);
-  }, 600000);
-}
+  
   if (event.type !== "message" || event.message.type !== "text") {
     return null;
   }
@@ -231,14 +221,20 @@ async function handleEvent(event) {
 
   const permission = await getPermission(userId, groupId);
 
+console.log("permission:", permission);
+
 const needsPermission =
   msg !== "/綁定群組" &&
   (
     msg.startsWith("/") ||
-    /^(完成|收款|退款)([+-])/.test(msg)
+    /^[+-]/.test(msg) ||
+    /^(完成|收款|退款)/.test(msg)
   );
 
+console.log("needsPermission:", needsPermission);
+
 if (needsPermission && !permission) {
+  console.log("被權限擋掉");
   return null;
 }
 
@@ -570,7 +566,11 @@ if (msg.startsWith("/拔權 ")) {
   const aName = configRow[1];
   const bName = configRow[2];
 
-  const actionMatch = msg.match(/^(完成|收款|退款)([+-])([^\s]+)(?:\s+(.*))?$/);
+  const actionMatch = msg.match(
+  /^(?:(完成|收款|退款))?([+-])([0-9.*]+)(?:\s+(.*))?$/
+);
+
+console.log("actionMatch:", actionMatch);
 
   if (actionMatch) {
     const action = actionMatch[1];
