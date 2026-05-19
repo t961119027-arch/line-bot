@@ -1,6 +1,6 @@
 {
-  "name": "line-erp-bot-v6",
-  "version": "6.0.0",
+  "name": "smart-raccoon-m-v7",
+  "version": "7.0.0",
   "main": "index.js",
   "scripts": {
     "start": "node index.js"
