@@ -646,9 +646,9 @@ ${statusText}`
     let statusText = "";
 
     if (balance > 0) {
-      statusText = `${bName} 目前欠你 ${formatMoney(balance)}`;
+      statusText = `${bName} 目前欠 ${aName} ${formatMoney(balance)}`;
     } else if (balance < 0) {
-      statusText = `你目前欠 ${bName} ${formatMoney(Math.abs(balance))}`;
+      statusText = `${aName} 目前欠 ${bName} ${formatMoney(Math.abs(balance))}`;
     } else {
       statusText = "目前雙方已結清";
     }
