@@ -604,9 +604,19 @@ console.log("actionMatch:", actionMatch);
 
     let signedAmount = 0;
 
-    if (action === "完成") signedAmount = amount;
-    if (action === "收款") signedAmount = -amount;
-    if (action === "退款") signedAmount = -amount;
+if (!action) {
+  // 快捷模式：+100 / -100
+  signedAmount = sign === "+" ? amount : -amount;
+} else if (action === "完成") {
+  // 完成+100 / 完成-100
+  signedAmount = sign === "+" ? amount : -amount;
+} else if (action === "收款") {
+  // 收款固定減少欠款
+  signedAmount = -Math.abs(amount);
+} else if (action === "退款") {
+  // 退款固定減少欠款
+  signedAmount = -Math.abs(amount);
+}
 
     const ledger = await getSheet("GroupLedger!A:H");
 
