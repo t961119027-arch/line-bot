@@ -438,6 +438,15 @@ async function listPendingTopupOrders(limit = 10) {
     .slice(0, limit);
 }
 
+async function findLatestActionableTopupOrder() {
+  const orders = await getTopupOrders();
+  const row = orders
+    .reverse()
+    .find(item => ["pending_payment", "payment_reported", "approved"].includes(item[7]));
+
+  return row ? parseTopupOrderRow(row) : null;
+}
+
 async function getBotConfigValue(key) {
   const rows = await getSheet("BotConfig!A:B");
   const row = rows.find(item => item[0] === key);
@@ -776,8 +785,24 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     );
   }
 
-  const adminMatch = msg.match(/^(核准|完成|退回)\s+(T[A-Z0-9]+)$/i);
-  if (adminMatch) {
+  const quickAdminMatch = msg.match(/^(核准|完成|退回)$/);
+
+  if (quickAdminMatch && event.source.type === "group" && groupId === await getBackendGroupId()) {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以更新訂單。"));
+    }
+
+    const latestOrder = await findLatestActionableTopupOrder();
+
+    if (!latestOrder) {
+      return client.replyMessage(event.replyToken, flexCard("沒有訂單", "目前沒有可處理的訂單。"));
+    }
+
+    msg = `${quickAdminMatch[1]} ${latestOrder.id}`;
+  }
+
+  const resolvedAdminMatch = msg.match(/^(核准|完成|退回)\s+(T[A-Z0-9]+)$/i);
+  if (resolvedAdminMatch) {
     if (!isTopupAdmin(userId, permission)) {
       return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以更新訂單。"));
     }
@@ -788,15 +813,15 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
       "退回": "rejected"
     };
 
-    let order = await updateTopupOrder(adminMatch[2].toUpperCase(), () => ({
-      status: statusMap[adminMatch[1]]
+    let order = await updateTopupOrder(resolvedAdminMatch[2].toUpperCase(), () => ({
+      status: statusMap[resolvedAdminMatch[1]]
     }));
 
     if (!order) {
       return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆訂單。"));
     }
 
-    if (adminMatch[1] === "核准") {
+    if (resolvedAdminMatch[1] === "核准") {
       const inventory = await allocateTopupInventory(order);
 
       if (inventory) {
