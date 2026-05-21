@@ -3,6 +3,20 @@ const express = require("express");
 const line = require("@line/bot-sdk");
 const { google } = require("googleapis");
 
+const requiredEnv = [
+  "CHANNEL_ACCESS_TOKEN",
+  "CHANNEL_SECRET",
+  "GOOGLE_CLIENT_EMAIL",
+  "GOOGLE_PRIVATE_KEY",
+  "SPREADSHEET_ID"
+];
+
+const missingEnv = requiredEnv.filter(name => !process.env[name]);
+
+if (missingEnv.length) {
+  throw new Error(`Missing required env: ${missingEnv.join(", ")}`);
+}
+
 const app = express();
 
 const config = {
@@ -161,7 +175,283 @@ async function writeAudit(groupId, userName, action) {
 
 function requireGroup(event) {
   return event.source.type === "group";
-}app.post("/webhook", line.middleware(config), async (req, res) => {
+}
+
+app.get("/", (_req, res) => {
+  res.json({
+    ok: true,
+    service: "smart-raccoon-m-v7",
+    time: nowTW()
+  });
+});
+
+const adminLineUserIds = (process.env.ADMIN_LINE_USER_IDS || "")
+  .split(",")
+  .map(id => id.trim())
+  .filter(Boolean);
+
+function makeOrderId() {
+  const stamp = Date.now().toString(36).toUpperCase();
+  const random = Math.random().toString(36).slice(2, 6).toUpperCase();
+  return `T${stamp}${random}`;
+}
+
+function isTopupAdmin(userId, permission) {
+  return adminLineUserIds.includes(userId) || (permission && permission[2] === "admin");
+}
+
+function topupStatusText(status) {
+  return {
+    pending_payment: "待付款",
+    payment_reported: "已回報付款，待審核",
+    approved: "已核准，處理中",
+    completed: "已完成",
+    rejected: "已退回"
+  }[status] || status;
+}
+
+function parseTopupOrderRow(row) {
+  return {
+    id: row[0] || "",
+    createdAt: row[1] || "",
+    userId: row[2] || "",
+    groupId: row[3] || "",
+    product: row[4] || "",
+    amount: row[5] || "",
+    note: row[6] || "",
+    status: row[7] || "",
+    paymentNote: row[8] || "",
+    updatedAt: row[9] || ""
+  };
+}
+
+function formatTopupOrder(order) {
+  return [
+    `訂單編號：${order.id}`,
+    `品項：${order.product}`,
+    `金額：${order.amount ? `NT$${formatMoney(order.amount)}` : "待確認"}`,
+    `狀態：${topupStatusText(order.status)}`,
+    order.note ? `備註：${order.note}` : "",
+    order.paymentNote ? `付款備註：${order.paymentNote}` : "",
+    `建立時間：${order.createdAt}`
+  ].filter(Boolean).join("\n");
+}
+
+async function getTopupOrders() {
+  const rows = await getSheet("TopupOrders!A:J");
+  return rows.slice(1);
+}
+
+async function createTopupOrder(userId, groupId, product, amount, note) {
+  const order = {
+    id: makeOrderId(),
+    createdAt: nowTW(),
+    userId,
+    groupId,
+    product,
+    amount,
+    note,
+    status: "pending_payment",
+    paymentNote: "",
+    updatedAt: nowTW()
+  };
+
+  await appendSheet("TopupOrders!A:J", [[
+    order.id,
+    order.createdAt,
+    order.userId,
+    order.groupId,
+    order.product,
+    order.amount,
+    order.note,
+    order.status,
+    order.paymentNote,
+    order.updatedAt
+  ]]);
+
+  return order;
+}
+
+async function updateTopupOrder(orderId, updater) {
+  const rows = await getSheet("TopupOrders!A:J");
+  const index = rows.findIndex(row => row[0] === orderId);
+
+  if (index < 1) return null;
+
+  const row = rows[index];
+  const order = parseTopupOrderRow(row);
+  const updates = updater(order);
+
+  if (updates === null) return null;
+
+  const next = { ...order, ...updates, updatedAt: nowTW() };
+
+  const nextRow = [
+    next.id,
+    next.createdAt,
+    next.userId,
+    next.groupId,
+    next.product,
+    next.amount,
+    next.note,
+    next.status,
+    next.paymentNote,
+    next.updatedAt
+  ];
+
+  await updateSheet(`TopupOrders!A${index + 1}:J${index + 1}`, [nextRow]);
+  return next;
+}
+
+async function findLatestTopupOrder(userId) {
+  const orders = await getTopupOrders();
+  const row = orders.reverse().find(item => item[2] === userId);
+  return row ? parseTopupOrderRow(row) : null;
+}
+
+async function notifyTopupAdmins(order, title) {
+  if (!adminLineUserIds.length) return;
+
+  const text = `${title}\n\n${formatTopupOrder(order)}\n\n管理指令：\n核准 ${order.id}\n完成 ${order.id}\n退回 ${order.id}`;
+
+  await Promise.allSettled(adminLineUserIds.map(to =>
+    client.pushMessage(to, { type: "text", text })
+  ));
+}
+
+async function replyTopupHelp(event) {
+  return client.replyMessage(
+    event.replyToken,
+    flexCard(
+      "代儲服務",
+      [
+        "請使用以下指令：",
+        "代儲品項",
+        "下單 品項 金額 備註",
+        "付款回報 訂單編號 末五碼或備註",
+        "查詢訂單"
+      ].join("\n"),
+      [
+        { label: "查看品項", text: "代儲品項" },
+        { label: "查詢訂單", text: "查詢訂單" }
+      ]
+    )
+  );
+}
+
+async function handleTopupCommand(event, msg, userId, groupId, permission) {
+  if (["代儲", "代儲選單", "儲值", "topup"].includes(msg.toLowerCase())) {
+    return replyTopupHelp(event);
+  }
+
+  if (msg === "代儲品項") {
+    const pricing = await getSheet("Pricing!A:C");
+    const text = pricing.length
+      ? pricing.map(row => `${row[0]}：NT$${formatMoney(row[1])}`).join("\n")
+      : "目前尚未設定品項，請用「下單 品項 金額 備註」送出需求。";
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("代儲品項", text)
+    );
+  }
+
+  if (msg.startsWith("下單 ")) {
+    const match = msg.match(/^下單\s+(.+?)\s+(\d+)(?:\s+(.*))?$/);
+
+    if (!match) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("格式錯誤", "請輸入：下單 品項 金額 備註\n例如：下單 遊戲點數 100 玩家ID abc123")
+      );
+    }
+
+    const order = await createTopupOrder(
+      userId,
+      groupId,
+      match[1],
+      Number(match[2]),
+      match[3] || ""
+    );
+
+    await notifyTopupAdmins(order, "新代儲訂單");
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "訂單已建立",
+        `${formatTopupOrder(order)}\n\n付款後請輸入：付款回報 ${order.id} 末五碼或備註`
+      )
+    );
+  }
+
+  if (msg.startsWith("付款回報 ")) {
+    const match = msg.match(/^付款回報\s+(T[A-Z0-9]+)\s+(.+)$/i);
+
+    if (!match) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("格式錯誤", "請輸入：付款回報 訂單編號 末五碼或備註")
+      );
+    }
+
+    const order = await updateTopupOrder(match[1].toUpperCase(), existing => {
+      if (existing.userId !== userId && !isTopupAdmin(userId, permission)) return null;
+      return { status: "payment_reported", paymentNote: match[2] };
+    });
+
+    if (!order) {
+      return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆代儲訂單。"));
+    }
+
+    await notifyTopupAdmins(order, "代儲付款回報");
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("已收到付款回報", formatTopupOrder(order))
+    );
+  }
+
+  if (msg === "查詢訂單") {
+    const order = await findLatestTopupOrder(userId);
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("訂單查詢", order ? formatTopupOrder(order) : "目前查不到你的代儲訂單。")
+    );
+  }
+
+  const adminMatch = msg.match(/^(核准|完成|退回)\s+(T[A-Z0-9]+)$/i);
+  if (adminMatch) {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以更新代儲訂單。"));
+    }
+
+    const statusMap = {
+      "核准": "approved",
+      "完成": "completed",
+      "退回": "rejected"
+    };
+
+    const order = await updateTopupOrder(adminMatch[2].toUpperCase(), () => ({
+      status: statusMap[adminMatch[1]]
+    }));
+
+    if (!order) {
+      return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆代儲訂單。"));
+    }
+
+    await client.pushMessage(order.userId, {
+      type: "text",
+      text: `你的代儲訂單狀態已更新。\n\n${formatTopupOrder(order)}`
+    });
+
+    return client.replyMessage(event.replyToken, flexCard("訂單已更新", formatTopupOrder(order)));
+  }
+
+  return null;
+}
+
+app.post("/webhook", line.middleware(config), async (req, res) => {
   try {
     await Promise.all(req.body.events.map(handleEvent));
     res.status(200).end();
@@ -180,6 +470,12 @@ async function handleEvent(event) {
   const msg = event.message.text.trim();
   const userId = event.source.userId;
   const groupId = event.source.groupId || "";
+  const earlyPermission = groupId ? await getPermission(userId, groupId) : null;
+  const topupResponse = await handleTopupCommand(event, msg, userId, groupId, earlyPermission);
+
+  if (topupResponse) {
+    return topupResponse;
+  }
 
   if (!requireGroup(event)) {
     return client.replyMessage(
@@ -219,9 +515,7 @@ async function handleEvent(event) {
     );
   }
 
-  const permission = await getPermission(userId, groupId);
-
-console.log("permission:", permission);
+  const permission = earlyPermission || await getPermission(userId, groupId);
 
 const needsPermission =
   msg !== "/綁定群組" &&
@@ -231,10 +525,7 @@ const needsPermission =
     /^(完成|收款|退款)/.test(msg)
   );
 
-console.log("needsPermission:", needsPermission);
-
 if (needsPermission && !permission) {
-  console.log("被權限擋掉");
   return null;
 }
 
@@ -569,8 +860,6 @@ if (msg.startsWith("/拔權 ")) {
   const actionMatch = msg.match(
   /^(?:(完成|收款|退款))?([+-])([0-9.*]+)(?:\s+(.*))?$/
 );
-
-console.log("actionMatch:", actionMatch);
 
   if (actionMatch) {
     const action = actionMatch[1];
