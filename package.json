@@ -1,9 +1,12 @@
 {
   "name": "smart-raccoon-m-v7",
-  "version": "7.0.0",
+  "version": "7.1.0",
+  "description": "LINE bot with legacy Google Sheets features and top-up order intake.",
   "main": "index.js",
   "scripts": {
-    "start": "node index.js"
+    "start": "node index.js",
+    "dev": "node index.js",
+    "init:sheets": "node scripts/init-sheets.js"
   },
   "dependencies": {
     "@line/bot-sdk": "^9.9.0",
