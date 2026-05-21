@@ -56,6 +56,11 @@ const sheetDefinitions = [
     headers: ["設定", "值"]
   },
   {
+    title: "TopupInstructions",
+    range: "TopupInstructions!A1:D1",
+    headers: ["商品", "金額", "說明", "更新時間"]
+  },
+  {
     title: "Permissions",
     range: "Permissions!A1:D1",
     headers: ["群組ID", "使用者ID", "角色", "名稱"]

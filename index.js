@@ -69,6 +69,13 @@ const botConfigHeaders = [
   "值"
 ];
 
+const topupInstructionsHeaders = [
+  "商品",
+  "金額",
+  "說明",
+  "更新時間"
+];
+
 async function ensureTopupSheet() {
   const spreadsheet = await sheets.spreadsheets.get({
     spreadsheetId,
@@ -94,6 +101,11 @@ async function ensureTopupSheet() {
       title: "BotConfig",
       range: "BotConfig!A1:B1",
       headers: botConfigHeaders
+    },
+    {
+      title: "TopupInstructions",
+      range: "TopupInstructions!A1:D1",
+      headers: topupInstructionsHeaders
     }
   ];
 
@@ -481,6 +493,48 @@ async function getTopupInventorySummary() {
     .sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"));
 }
 
+async function setTopupInstruction(product, amount, instruction) {
+  const rows = await getSheet("TopupInstructions!A:D");
+  const index = rows.findIndex((row, rowIndex) => {
+    if (rowIndex === 0) return false;
+    return Number(row[1]) === Number(amount) && productMatches(row[0], product);
+  });
+
+  const nextRow = [product, amount, instruction, nowTW()];
+
+  if (index >= 0) {
+    await updateSheet(`TopupInstructions!A${index + 1}:D${index + 1}`, [nextRow]);
+  } else {
+    await appendSheet("TopupInstructions!A:D", [nextRow]);
+  }
+}
+
+async function getTopupInstruction(product, amount) {
+  const rows = await getSheet("TopupInstructions!A:D");
+  const row = rows.find((item, index) => {
+    if (index === 0) return false;
+    return Number(item[1]) === Number(amount) && productMatches(item[0], product);
+  });
+
+  return row ? row[2] : "";
+}
+
+async function formatDeliveryMessage(order, inventory) {
+  const instruction = await getTopupInstruction(inventory.product, inventory.amount);
+
+  return [
+    "你的訂單已完成。",
+    "",
+    `商品：${inventory.product}`,
+    `金額：NT$${formatMoney(inventory.amount)}`,
+    `訂單：${order.id}`,
+    "",
+    instruction ? `使用說明：\n${instruction}` : "",
+    instruction ? "" : "",
+    `點數序號：\n${inventory.content}`
+  ].filter(line => line !== "").join("\n");
+}
+
 async function allocateTopupInventory(order) {
   const rows = await getSheet("TopupInventory!A:G");
   const index = rows.findIndex((row, rowIndex) => {
@@ -678,6 +732,28 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     return client.replyMessage(event.replyToken, flexCard("庫存", text));
   }
 
+  if (msg.startsWith("設定說明 ")) {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以設定說明。"));
+    }
+
+    const match = msg.match(/^設定說明\s+(.+?)\s+(\d+)\s+([\s\S]+)$/);
+
+    if (!match) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("設定說明格式", "請輸入：設定說明 商品 金額 說明文案\n例如：設定說明 傳說點券 300 請到遊戲內兌換中心輸入序號")
+      );
+    }
+
+    await setTopupInstruction(match[1].trim(), Number(match[2]), match[3].trim());
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("說明已設定", `${match[1].trim()}｜NT$${formatMoney(match[2])}\n\n之後出貨會自動附上這段說明。`)
+    );
+  }
+
   if (msg.startsWith("入庫 ")) {
     if (!isTopupAdmin(userId, permission)) {
       return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以入庫。"));
@@ -688,7 +764,7 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     if (!match) {
       return client.replyMessage(
         event.replyToken,
-        flexCard("入庫格式", "請輸入：入庫 商品 金額 點數內容\n例如：入庫 傳說點券 300 ABCD-1234")
+        flexCard("入庫格式", "請輸入：入庫 商品 金額 序號\n例如：入庫 傳說點券 300 ABCD-1234")
       );
     }
 
@@ -728,16 +804,7 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
 
         await client.pushMessage(order.userId, {
           type: "text",
-          text: [
-            "你的訂單已完成，點數如下：",
-            "",
-            `商品：${inventory.product}`,
-            `金額：NT$${formatMoney(inventory.amount)}`,
-            "",
-            inventory.content,
-            "",
-            `訂單：${order.id}`
-          ].join("\n")
+          text: await formatDeliveryMessage(order, inventory)
         });
 
         await notifyTopupBackend(`已自動出貨\n\n${formatTopupOrder(order)}`);
