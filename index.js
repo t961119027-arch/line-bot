@@ -763,7 +763,7 @@ async function notifyTopupBackend(text) {
 async function notifyTopupAdmins(order, title) {
   const text = `${title}\n\n${formatTopupOrder(order)}\n\n管理：\n核准 ${order.id}\n完成 ${order.id}\n退回 ${order.id}`;
   const backendGroupId = await getBackendGroupId();
-  const targets = [...adminLineUserIds, backendGroupId].filter(Boolean);
+  const targets = backendGroupId ? [backendGroupId] : adminLineUserIds;
 
   if (!targets.length) return;
 
