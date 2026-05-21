@@ -76,6 +76,15 @@ const topupInstructionsHeaders = [
   "更新時間"
 ];
 
+const topupPaymentsHeaders = [
+  "名稱",
+  "帳號",
+  "戶名",
+  "備註",
+  "狀態",
+  "更新時間"
+];
+
 async function ensureTopupSheet() {
   const spreadsheet = await sheets.spreadsheets.get({
     spreadsheetId,
@@ -106,6 +115,11 @@ async function ensureTopupSheet() {
       title: "TopupInstructions",
       range: "TopupInstructions!A1:D1",
       headers: topupInstructionsHeaders
+    },
+    {
+      title: "TopupPayments",
+      range: "TopupPayments!A1:F1",
+      headers: topupPaymentsHeaders
     }
   ];
 
@@ -322,6 +336,100 @@ function parseTopupOrderRow(row) {
   };
 }
 
+function paymentMethodsFlex(methods) {
+  const rows = methods.flatMap(method => ([
+    {
+      type: "box",
+      layout: "vertical",
+      paddingAll: "12px",
+      backgroundColor: "#1B1B1B",
+      cornerRadius: "md",
+      margin: "md",
+      contents: [
+        {
+          type: "text",
+          text: method.name,
+          color: "#D4AF37",
+          weight: "bold",
+          size: "md"
+        },
+        {
+          type: "box",
+          layout: "baseline",
+          margin: "sm",
+          contents: [
+            { type: "text", text: "帳號", color: "#888888", size: "xs", flex: 2 },
+            { type: "text", text: method.account, color: "#FFFFFF", size: "sm", flex: 5, wrap: true }
+          ]
+        },
+        {
+          type: "box",
+          layout: "baseline",
+          margin: "xs",
+          contents: [
+            { type: "text", text: "戶名", color: "#888888", size: "xs", flex: 2 },
+            { type: "text", text: method.holder || "-", color: "#FFFFFF", size: "sm", flex: 5, wrap: true }
+          ]
+        },
+        method.note ? {
+          type: "text",
+          text: method.note,
+          color: "#BBBBBB",
+          size: "xs",
+          wrap: true,
+          margin: "sm"
+        } : {
+          type: "filler"
+        }
+      ]
+    }
+  ]));
+
+  return {
+    type: "flex",
+    altText: "付款方式",
+    contents: {
+      type: "bubble",
+      hero: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#0A0A0A",
+        paddingAll: "20px",
+        contents: [
+          {
+            type: "text",
+            text: "付款方式",
+            color: "#D4AF37",
+            weight: "bold",
+            size: "xl"
+          },
+          {
+            type: "text",
+            text: "匯款後請回傳付款末五碼",
+            color: "#AAAAAA",
+            size: "xs",
+            margin: "sm"
+          }
+        ]
+      },
+      body: {
+        type: "box",
+        layout: "vertical",
+        backgroundColor: "#111111",
+        contents: rows.length ? rows : [
+          {
+            type: "text",
+            text: "目前尚未設定付款方式",
+            color: "#FFFFFF",
+            size: "sm",
+            wrap: true
+          }
+        ]
+      }
+    }
+  };
+}
+
 function formatTopupOrder(order) {
   return [
     `訂單：${order.id}`,
@@ -349,12 +457,25 @@ function topupOrderGuide() {
 
 function paymentGuide(orderId = "T訂單編號") {
   return [
+    "可先傳「付款方式」查看匯款資料。",
+    "",
     "付款後照這個格式傳：",
     `付款回報 ${orderId} 末五碼`,
     "",
     "例如：",
     `付款回報 ${orderId} 12345`
   ].join("\n");
+}
+
+function parsePaymentMethodRow(row) {
+  return {
+    name: row[0] || "",
+    account: row[1] || "",
+    holder: row[2] || "",
+    note: row[3] || "",
+    status: row[4] || "active",
+    updatedAt: row[5] || ""
+  };
 }
 
 async function getTopupOrders() {
@@ -528,6 +649,30 @@ async function getTopupInstruction(product, amount) {
   return row ? row[2] : "";
 }
 
+async function getPaymentMethods() {
+  const rows = await getSheet("TopupPayments!A:F");
+  return rows
+    .slice(1)
+    .map(parsePaymentMethodRow)
+    .filter(method => method.name && method.account && method.status !== "disabled");
+}
+
+async function setPaymentMethod(name, account, holder, note) {
+  const rows = await getSheet("TopupPayments!A:F");
+  const index = rows.findIndex((row, rowIndex) => {
+    if (rowIndex === 0) return false;
+    return String(row[0] || "").trim() === name;
+  });
+
+  const nextRow = [name, account, holder, note, "active", nowTW()];
+
+  if (index >= 0) {
+    await updateSheet(`TopupPayments!A${index + 1}:F${index + 1}`, [nextRow]);
+  } else {
+    await appendSheet("TopupPayments!A:F", [nextRow]);
+  }
+}
+
 async function formatDeliveryMessage(order, inventory) {
   const instruction = await getTopupInstruction(inventory.product, inventory.amount);
 
@@ -605,6 +750,7 @@ async function replyTopupHelp(event) {
       "請選擇：",
       [
         { label: "我要下單", text: "我要下單" },
+        { label: "付款方式", text: "付款方式" },
         { label: "付款回報", text: "付款回報" },
         { label: "查詢訂單", text: "查詢訂單" }
       ]
@@ -642,6 +788,11 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
 
   if (["我要下單", "下單", "代儲品項", "商品"].includes(msg)) {
     return replyTopupProducts(event);
+  }
+
+  if (msg === "付款方式") {
+    const methods = await getPaymentMethods();
+    return client.replyMessage(event.replyToken, paymentMethodsFlex(methods));
   }
 
   if (msg === "付款回報") {
@@ -725,6 +876,28 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     return client.replyMessage(
       event.replyToken,
       flexCard("後台狀態", `後台群組：${backendGroupId ? "已設定" : "未設定"}\n\n庫存：\n${stockText}`)
+    );
+  }
+
+  if (msg.startsWith("設定付款 ")) {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以設定付款方式。"));
+    }
+
+    const match = msg.match(/^設定付款\s+(\S+)\s+(\S+)\s+(\S+)(?:\s+([\s\S]+))?$/);
+
+    if (!match) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("設定付款格式", "請輸入：設定付款 名稱 帳號 戶名 備註\n例如：設定付款 台新銀行 123456789 王小明 轉帳後請回傳末五碼")
+      );
+    }
+
+    await setPaymentMethod(match[1], match[2], match[3], match[4] || "");
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("付款方式已設定", `${match[1]}\n帳號：${match[2]}\n戶名：${match[3]}`)
     );
   }
 
@@ -871,7 +1044,7 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
       event.replyToken,
       flexCard(
         "下單成功",
-        `${formatTopupOrder(order)}\n\n${paymentGuide(order.id)}`
+        `${formatTopupOrder(order)}\n\n請傳「付款方式」查看匯款資料。\n\n${paymentGuide(order.id)}`
       )
     );
   }

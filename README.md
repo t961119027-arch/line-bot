@@ -53,6 +53,7 @@ https://你的網域/webhook
 
 ```text
 代儲
+付款方式
 代儲品項
 下單 遊戲點數 100 玩家ID: abc123
 付款回報 TXXXXXXXX 12345
@@ -64,6 +65,7 @@ https://你的網域/webhook
 ```text
 設定後台群組
 後台狀態
+設定付款 台新銀行 123456789 王小明 轉帳後請回傳末五碼
 庫存
 設定說明 傳說點券 300 請到遊戲內兌換中心輸入序號
 入庫 傳說點券 300 ABCD-1234
@@ -89,7 +91,7 @@ https://你的網域/webhook
 可以執行 `npm run init:sheets` 自動建立/補齊以下工作表：
 
 ```text
-TopupOrders, TopupInventory, TopupInstructions, BotConfig, Permissions, GroupConfig, AuditLog, Pricing, GroupLedger, Payroll, PersonalFinance, CompanyFinance
+TopupOrders, TopupInventory, TopupInstructions, TopupPayments, BotConfig, Permissions, GroupConfig, AuditLog, Pricing, GroupLedger, Payroll, PersonalFinance, CompanyFinance
 ```
 
 `TopupOrders` 第一列會是：

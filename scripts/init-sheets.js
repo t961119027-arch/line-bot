@@ -61,6 +61,11 @@ const sheetDefinitions = [
     headers: ["商品", "金額", "說明", "更新時間"]
   },
   {
+    title: "TopupPayments",
+    range: "TopupPayments!A1:F1",
+    headers: ["名稱", "帳號", "戶名", "備註", "狀態", "更新時間"]
+  },
+  {
     title: "Permissions",
     range: "Permissions!A1:D1",
     headers: ["群組ID", "使用者ID", "角色", "名稱"]
