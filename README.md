@@ -62,17 +62,32 @@ https://你的網域/webhook
 管理員：
 
 ```text
+設定後台群組
+後台狀態
+庫存
+入庫 傳說點券 300 ABCD-1234
+待處理訂單
 核准 TXXXXXXXX
 完成 TXXXXXXXX
 退回 TXXXXXXXX
 ```
+
+## 後台群組與自動出貨
+
+1. 把機器人加入你的後台 LINE 群組。
+2. 在後台群組傳「設定後台群組」。
+3. 用「入庫 商品 金額 內容」放入點數或序號。
+4. 客人下單後，後台群組會收到新訂單。
+5. 管理員傳「核准 TXXXXXXXX」後，機器人會找同商品、同金額的可用庫存，自動私訊給客人並把訂單改成完成。
+
+如果沒有相同商品與金額的庫存，訂單會先核准，後台群組會收到缺貨提醒。
 
 ## Google Sheet 欄位
 
 可以執行 `npm run init:sheets` 自動建立/補齊以下工作表：
 
 ```text
-TopupOrders, Permissions, GroupConfig, AuditLog, Pricing, GroupLedger, Payroll, PersonalFinance, CompanyFinance
+TopupOrders, TopupInventory, BotConfig, Permissions, GroupConfig, AuditLog, Pricing, GroupLedger, Payroll, PersonalFinance, CompanyFinance
 ```
 
 `TopupOrders` 第一列會是：

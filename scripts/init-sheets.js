@@ -46,6 +46,16 @@ const sheetDefinitions = [
     ]
   },
   {
+    title: "TopupInventory",
+    range: "TopupInventory!A1:G1",
+    headers: ["建立時間", "商品", "金額", "內容", "狀態", "訂單編號", "更新時間"]
+  },
+  {
+    title: "BotConfig",
+    range: "BotConfig!A1:B1",
+    headers: ["設定", "值"]
+  },
+  {
     title: "Permissions",
     range: "Permissions!A1:D1",
     headers: ["群組ID", "使用者ID", "角色", "名稱"]

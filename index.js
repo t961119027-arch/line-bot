@@ -54,6 +54,21 @@ const topupOrderHeaders = [
   "更新時間"
 ];
 
+const topupInventoryHeaders = [
+  "建立時間",
+  "商品",
+  "金額",
+  "內容",
+  "狀態",
+  "訂單編號",
+  "更新時間"
+];
+
+const botConfigHeaders = [
+  "設定",
+  "值"
+];
+
 async function ensureTopupSheet() {
   const spreadsheet = await sheets.spreadsheets.get({
     spreadsheetId,
@@ -64,30 +79,50 @@ async function ensureTopupSheet() {
     (spreadsheet.data.sheets || []).map(sheet => sheet.properties.title)
   );
 
-  if (!titles.has("TopupOrders")) {
+  const sheetDefinitions = [
+    {
+      title: "TopupOrders",
+      range: "TopupOrders!A1:J1",
+      headers: topupOrderHeaders
+    },
+    {
+      title: "TopupInventory",
+      range: "TopupInventory!A1:G1",
+      headers: topupInventoryHeaders
+    },
+    {
+      title: "BotConfig",
+      range: "BotConfig!A1:B1",
+      headers: botConfigHeaders
+    }
+  ];
+
+  const requests = sheetDefinitions
+    .filter(sheet => !titles.has(sheet.title))
+    .map(sheet => ({
+      addSheet: {
+        properties: {
+          title: sheet.title
+        }
+      }
+    }));
+
+  if (requests.length) {
     await sheets.spreadsheets.batchUpdate({
       spreadsheetId,
-      requestBody: {
-        requests: [
-          {
-            addSheet: {
-              properties: {
-                title: "TopupOrders"
-              }
-            }
-          }
-        ]
-      }
+      requestBody: { requests }
     });
   }
 
-  const current = await sheets.spreadsheets.values.get({
-    spreadsheetId,
-    range: "TopupOrders!A1:J1"
-  });
+  for (const sheet of sheetDefinitions) {
+    const current = await sheets.spreadsheets.values.get({
+      spreadsheetId,
+      range: sheet.range
+    });
 
-  if (!current.data.values || !current.data.values[0]) {
-    await updateSheet("TopupOrders!A1:J1", [topupOrderHeaders]);
+    if (!current.data.values || !current.data.values[0]) {
+      await updateSheet(sheet.range, [sheet.headers]);
+    }
   }
 }
 
@@ -391,12 +426,110 @@ async function listPendingTopupOrders(limit = 10) {
     .slice(0, limit);
 }
 
+async function getBotConfigValue(key) {
+  const rows = await getSheet("BotConfig!A:B");
+  const row = rows.find(item => item[0] === key);
+  return row ? row[1] : "";
+}
+
+async function setBotConfigValue(key, value) {
+  const rows = await getSheet("BotConfig!A:B");
+  const index = rows.findIndex(item => item[0] === key);
+
+  if (index >= 0) {
+    await updateSheet(`BotConfig!A${index + 1}:B${index + 1}`, [[key, value]]);
+  } else {
+    await appendSheet("BotConfig!A:B", [[key, value]]);
+  }
+}
+
+async function getBackendGroupId() {
+  return process.env.BACKEND_LINE_GROUP_ID || await getBotConfigValue("backend_group_id");
+}
+
+function productMatches(stockProduct, orderProduct) {
+  const stock = String(stockProduct || "").trim().toLowerCase();
+  const order = String(orderProduct || "").trim().toLowerCase();
+  return stock === order || stock.includes(order) || order.includes(stock);
+}
+
+async function addTopupInventory(product, amount, content) {
+  await appendSheet("TopupInventory!A:G", [[
+    nowTW(),
+    product,
+    amount,
+    content,
+    "available",
+    "",
+    nowTW()
+  ]]);
+}
+
+async function getTopupInventorySummary() {
+  const rows = await getSheet("TopupInventory!A:G");
+  const summary = {};
+
+  rows.slice(1).forEach(row => {
+    const status = row[4] || "";
+    if (status !== "available") return;
+
+    const key = `${row[1] || "未命名"}｜NT$${formatMoney(row[2])}`;
+    summary[key] = (summary[key] || 0) + 1;
+  });
+
+  return Object.entries(summary)
+    .sort((a, b) => a[0].localeCompare(b[0], "zh-Hant"));
+}
+
+async function allocateTopupInventory(order) {
+  const rows = await getSheet("TopupInventory!A:G");
+  const index = rows.findIndex((row, rowIndex) => {
+    if (rowIndex === 0) return false;
+    return row[4] === "available"
+      && Number(row[2]) === Number(order.amount)
+      && productMatches(row[1], order.product);
+  });
+
+  if (index < 1) return null;
+
+  const row = rows[index];
+  const item = {
+    product: row[1] || "",
+    amount: row[2] || "",
+    content: row[3] || ""
+  };
+
+  await updateSheet(`TopupInventory!A${index + 1}:G${index + 1}`, [[
+    row[0] || nowTW(),
+    row[1] || "",
+    row[2] || "",
+    row[3] || "",
+    "used",
+    order.id,
+    nowTW()
+  ]]);
+
+  return item;
+}
+
+async function notifyTopupBackend(text) {
+  const backendGroupId = await getBackendGroupId();
+  if (!backendGroupId) return;
+
+  await client.pushMessage(backendGroupId, {
+    type: "text",
+    text
+  });
+}
+
 async function notifyTopupAdmins(order, title) {
-  if (!adminLineUserIds.length) return;
-
   const text = `${title}\n\n${formatTopupOrder(order)}\n\n管理：\n核准 ${order.id}\n完成 ${order.id}\n退回 ${order.id}`;
+  const backendGroupId = await getBackendGroupId();
+  const targets = [...adminLineUserIds, backendGroupId].filter(Boolean);
 
-  await Promise.allSettled(adminLineUserIds.map(to =>
+  if (!targets.length) return;
+
+  await Promise.allSettled([...new Set(targets)].map(to =>
     client.pushMessage(to, { type: "text", text })
   ));
 }
@@ -501,6 +634,72 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     return client.replyMessage(event.replyToken, flexCard("待處理訂單", text));
   }
 
+  if (msg === "設定後台群組") {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以設定後台群組。"));
+    }
+
+    if (event.source.type !== "group") {
+      return client.replyMessage(event.replyToken, flexCard("設定後台群組", "請把機器人加入你的後台群組，並在群組內傳「設定後台群組」。"));
+    }
+
+    await setBotConfigValue("backend_group_id", groupId);
+
+    return client.replyMessage(event.replyToken, flexCard("後台已設定", "之後新訂單、付款回報、缺貨提醒都會送到這個群組。"));
+  }
+
+  if (msg === "後台狀態") {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以查看後台狀態。"));
+    }
+
+    const backendGroupId = await getBackendGroupId();
+    const summary = await getTopupInventorySummary();
+    const stockText = summary.length
+      ? summary.map(([name, count]) => `${name}：${count} 組`).join("\n")
+      : "目前沒有可用庫存。";
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("後台狀態", `後台群組：${backendGroupId ? "已設定" : "未設定"}\n\n庫存：\n${stockText}`)
+    );
+  }
+
+  if (msg === "庫存") {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以查看庫存。"));
+    }
+
+    const summary = await getTopupInventorySummary();
+    const text = summary.length
+      ? summary.map(([name, count]) => `${name}：${count} 組`).join("\n")
+      : "目前沒有可用庫存。";
+
+    return client.replyMessage(event.replyToken, flexCard("庫存", text));
+  }
+
+  if (msg.startsWith("入庫 ")) {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以入庫。"));
+    }
+
+    const match = msg.match(/^入庫\s+(.+?)\s+(\d+)\s+([\s\S]+)$/);
+
+    if (!match) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("入庫格式", "請輸入：入庫 商品 金額 點數內容\n例如：入庫 傳說點券 300 ABCD-1234")
+      );
+    }
+
+    await addTopupInventory(match[1].trim(), Number(match[2]), match[3].trim());
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("入庫成功", `${match[1].trim()}｜NT$${formatMoney(match[2])}\n\n可輸入「庫存」查看目前庫存。`)
+    );
+  }
+
   const adminMatch = msg.match(/^(核准|完成|退回)\s+(T[A-Z0-9]+)$/i);
   if (adminMatch) {
     if (!isTopupAdmin(userId, permission)) {
@@ -513,12 +712,45 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
       "退回": "rejected"
     };
 
-    const order = await updateTopupOrder(adminMatch[2].toUpperCase(), () => ({
+    let order = await updateTopupOrder(adminMatch[2].toUpperCase(), () => ({
       status: statusMap[adminMatch[1]]
     }));
 
     if (!order) {
       return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆訂單。"));
+    }
+
+    if (adminMatch[1] === "核准") {
+      const inventory = await allocateTopupInventory(order);
+
+      if (inventory) {
+        order = await updateTopupOrder(order.id, () => ({ status: "completed" })) || order;
+
+        await client.pushMessage(order.userId, {
+          type: "text",
+          text: [
+            "你的訂單已完成，點數如下：",
+            "",
+            `商品：${inventory.product}`,
+            `金額：NT$${formatMoney(inventory.amount)}`,
+            "",
+            inventory.content,
+            "",
+            `訂單：${order.id}`
+          ].join("\n")
+        });
+
+        await notifyTopupBackend(`已自動出貨\n\n${formatTopupOrder(order)}`);
+        return client.replyMessage(event.replyToken, flexCard("已核准並出貨", formatTopupOrder(order)));
+      }
+
+      await client.pushMessage(order.userId, {
+        type: "text",
+        text: `你的訂單已核准，客服正在處理中。\n\n${formatTopupOrder(order)}`
+      });
+
+      await notifyTopupBackend(`庫存不足，無法自動出貨\n\n${formatTopupOrder(order)}\n\n請補貨後手動處理。`);
+      return client.replyMessage(event.replyToken, flexCard("已核准，庫存不足", "找不到同商品同金額的可用庫存，已通知後台補貨。"));
     }
 
     await client.pushMessage(order.userId, {
