@@ -657,6 +657,14 @@ async function getPaymentMethods() {
     .filter(method => method.name && method.account && method.status !== "disabled");
 }
 
+async function getAllPaymentMethods() {
+  const rows = await getSheet("TopupPayments!A:F");
+  return rows
+    .slice(1)
+    .map(parsePaymentMethodRow)
+    .filter(method => method.name);
+}
+
 async function setPaymentMethod(name, account, holder, note) {
   const rows = await getSheet("TopupPayments!A:F");
   const index = rows.findIndex((row, rowIndex) => {
@@ -671,6 +679,28 @@ async function setPaymentMethod(name, account, holder, note) {
   } else {
     await appendSheet("TopupPayments!A:F", [nextRow]);
   }
+}
+
+async function disablePaymentMethod(name) {
+  const rows = await getSheet("TopupPayments!A:F");
+  const index = rows.findIndex((row, rowIndex) => {
+    if (rowIndex === 0) return false;
+    return String(row[0] || "").trim() === name;
+  });
+
+  if (index < 0) return false;
+
+  const row = rows[index];
+  await updateSheet(`TopupPayments!A${index + 1}:F${index + 1}`, [[
+    row[0] || name,
+    row[1] || "",
+    row[2] || "",
+    row[3] || "",
+    "disabled",
+    nowTW()
+  ]]);
+
+  return true;
 }
 
 async function formatDeliveryMessage(order, inventory) {
@@ -898,6 +928,33 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     return client.replyMessage(
       event.replyToken,
       flexCard("付款方式已設定", `${match[1]}\n帳號：${match[2]}\n戶名：${match[3]}`)
+    );
+  }
+
+  if (msg === "付款清單") {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以查看付款清單。"));
+    }
+
+    const methods = await getAllPaymentMethods();
+    const text = methods.length
+      ? methods.map(method => `${method.name}｜${method.status === "disabled" ? "停用" : "啟用"}｜${method.account}`).join("\n")
+      : "目前尚未設定付款方式。";
+
+    return client.replyMessage(event.replyToken, flexCard("付款清單", text));
+  }
+
+  if (msg.startsWith("刪除付款 ")) {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以刪除付款方式。"));
+    }
+
+    const name = msg.replace(/^刪除付款\s+/, "").trim();
+    const removed = await disablePaymentMethod(name);
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(removed ? "付款方式已停用" : "找不到付款方式", removed ? `${name} 已停用，客人查詢時不會再看到。` : "請先輸入「付款清單」確認名稱。")
     );
   }
 
