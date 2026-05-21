@@ -41,6 +41,56 @@ const sheets = google.sheets({
 
 const spreadsheetId = process.env.SPREADSHEET_ID;
 
+const topupOrderHeaders = [
+  "訂單編號",
+  "建立時間",
+  "使用者ID",
+  "群組ID",
+  "品項",
+  "金額",
+  "備註",
+  "狀態",
+  "付款備註",
+  "更新時間"
+];
+
+async function ensureTopupSheet() {
+  const spreadsheet = await sheets.spreadsheets.get({
+    spreadsheetId,
+    fields: "sheets.properties.title"
+  });
+
+  const titles = new Set(
+    (spreadsheet.data.sheets || []).map(sheet => sheet.properties.title)
+  );
+
+  if (!titles.has("TopupOrders")) {
+    await sheets.spreadsheets.batchUpdate({
+      spreadsheetId,
+      requestBody: {
+        requests: [
+          {
+            addSheet: {
+              properties: {
+                title: "TopupOrders"
+              }
+            }
+          }
+        ]
+      }
+    });
+  }
+
+  const current = await sheets.spreadsheets.values.get({
+    spreadsheetId,
+    range: "TopupOrders!A1:J1"
+  });
+
+  if (!current.data.values || !current.data.values[0]) {
+    await updateSheet("TopupOrders!A1:J1", [topupOrderHeaders]);
+  }
+}
+
 async function getSheet(range) {
   const res = await sheets.spreadsheets.values.get({
     spreadsheetId,
@@ -1264,4 +1314,7 @@ const PORT = process.env.PORT || 10000;
 
 app.listen(PORT, () => {
   console.log("Smart Raccoon M V7 running");
+  ensureTopupSheet()
+    .then(() => console.log("TopupOrders sheet ready"))
+    .catch(err => console.error("TopupOrders sheet setup failed:", err.message));
 });
