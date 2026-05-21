@@ -277,14 +277,37 @@ function parseTopupOrderRow(row) {
 
 function formatTopupOrder(order) {
   return [
-    `訂單編號：${order.id}`,
-    `品項：${order.product}`,
+    `訂單：${order.id}`,
+    `商品：${order.product}`,
     `金額：${order.amount ? `NT$${formatMoney(order.amount)}` : "待確認"}`,
     `狀態：${topupStatusText(order.status)}`,
-    order.note ? `備註：${order.note}` : "",
-    order.paymentNote ? `付款備註：${order.paymentNote}` : "",
-    `建立時間：${order.createdAt}`
+    order.note ? `資料：${order.note}` : "",
+    order.paymentNote ? `付款：${order.paymentNote}` : "",
+    `時間：${order.createdAt}`
   ].filter(Boolean).join("\n");
+}
+
+function topupOrderGuide() {
+  return [
+    "直接照這個格式傳：",
+    "商品 金額 遊戲ID",
+    "",
+    "例如：",
+    "傳說點券 300 abc123",
+    "",
+    "也可以傳：",
+    "下單 傳說點券 300 abc123"
+  ].join("\n");
+}
+
+function paymentGuide(orderId = "T訂單編號") {
+  return [
+    "付款後照這個格式傳：",
+    `付款回報 ${orderId} 末五碼`,
+    "",
+    "例如：",
+    `付款回報 ${orderId} 12345`
+  ].join("\n");
 }
 
 async function getTopupOrders() {
@@ -359,10 +382,19 @@ async function findLatestTopupOrder(userId) {
   return row ? parseTopupOrderRow(row) : null;
 }
 
+async function listPendingTopupOrders(limit = 10) {
+  const orders = await getTopupOrders();
+  return orders
+    .map(parseTopupOrderRow)
+    .filter(order => ["pending_payment", "payment_reported", "approved"].includes(order.status))
+    .reverse()
+    .slice(0, limit);
+}
+
 async function notifyTopupAdmins(order, title) {
   if (!adminLineUserIds.length) return;
 
-  const text = `${title}\n\n${formatTopupOrder(order)}\n\n管理指令：\n核准 ${order.id}\n完成 ${order.id}\n退回 ${order.id}`;
+  const text = `${title}\n\n${formatTopupOrder(order)}\n\n管理：\n核准 ${order.id}\n完成 ${order.id}\n退回 ${order.id}`;
 
   await Promise.allSettled(adminLineUserIds.map(to =>
     client.pushMessage(to, { type: "text", text })
@@ -374,64 +406,53 @@ async function replyTopupHelp(event) {
     event.replyToken,
     flexCard(
       "代儲服務",
+      "請選擇：",
       [
-        "請使用以下指令：",
-        "代儲品項",
-        "下單 品項 金額 備註",
-        "付款回報 訂單編號 末五碼或備註",
-        "查詢訂單"
-      ].join("\n"),
-      [
-        { label: "查看品項", text: "代儲品項" },
+        { label: "我要下單", text: "我要下單" },
+        { label: "付款回報", text: "付款回報" },
         { label: "查詢訂單", text: "查詢訂單" }
       ]
     )
   );
 }
 
+async function replyTopupProducts(event) {
+  const pricing = await getSheet("Pricing!A:C");
+  const text = pricing.length
+    ? `${pricing.map(row => `${row[0]}：NT$${formatMoney(row[1])}`).join("\n")}\n\n${topupOrderGuide()}`
+    : topupOrderGuide();
+
+  return client.replyMessage(event.replyToken, flexCard("我要下單", text));
+}
+
+function parseTopupOrderMessage(msg) {
+  const normalized = msg.startsWith("下單 ") ? msg.replace(/^下單\s+/, "") : msg;
+  const match = normalized.match(/^(.+?)\s+(\d+)(?:\s+(.+))?$/);
+  if (!match) return null;
+
+  return {
+    product: match[1].trim(),
+    amount: Number(match[2]),
+    note: (match[3] || "").trim()
+  };
+}
+
 async function handleTopupCommand(event, msg, userId, groupId, permission) {
-  if (["代儲", "代儲選單", "儲值", "topup"].includes(msg.toLowerCase())) {
+  const lowerMsg = msg.toLowerCase();
+
+  if (["代儲", "代儲選單", "儲值", "topup"].includes(lowerMsg)) {
     return replyTopupHelp(event);
   }
 
-  if (msg === "代儲品項") {
-    const pricing = await getSheet("Pricing!A:C");
-    const text = pricing.length
-      ? pricing.map(row => `${row[0]}：NT$${formatMoney(row[1])}`).join("\n")
-      : "目前尚未設定品項，請用「下單 品項 金額 備註」送出需求。";
-
-    return client.replyMessage(
-      event.replyToken,
-      flexCard("代儲品項", text)
-    );
+  if (["我要下單", "下單", "代儲品項", "商品"].includes(msg)) {
+    return replyTopupProducts(event);
   }
 
-  if (msg.startsWith("下單 ")) {
-    const match = msg.match(/^下單\s+(.+?)\s+(\d+)(?:\s+(.*))?$/);
-
-    if (!match) {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("格式錯誤", "請輸入：下單 品項 金額 備註\n例如：下單 遊戲點數 100 玩家ID abc123")
-      );
-    }
-
-    const order = await createTopupOrder(
-      userId,
-      groupId,
-      match[1],
-      Number(match[2]),
-      match[3] || ""
-    );
-
-    await notifyTopupAdmins(order, "新代儲訂單");
-
+  if (msg === "付款回報") {
+    const order = await findLatestTopupOrder(userId);
     return client.replyMessage(
       event.replyToken,
-      flexCard(
-        "訂單已建立",
-        `${formatTopupOrder(order)}\n\n付款後請輸入：付款回報 ${order.id} 末五碼或備註`
-      )
+      flexCard("付款回報", paymentGuide(order ? order.id : "T訂單編號"))
     );
   }
 
@@ -439,10 +460,7 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     const match = msg.match(/^付款回報\s+(T[A-Z0-9]+)\s+(.+)$/i);
 
     if (!match) {
-      return client.replyMessage(
-        event.replyToken,
-        flexCard("格式錯誤", "請輸入：付款回報 訂單編號 末五碼或備註")
-      );
+      return client.replyMessage(event.replyToken, flexCard("付款回報", paymentGuide()));
     }
 
     const order = await updateTopupOrder(match[1].toUpperCase(), existing => {
@@ -451,29 +469,42 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     });
 
     if (!order) {
-      return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆代儲訂單。"));
+      return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆訂單，請確認訂單編號。"));
     }
 
-    await notifyTopupAdmins(order, "代儲付款回報");
+    await notifyTopupAdmins(order, "付款回報");
 
     return client.replyMessage(
       event.replyToken,
-      flexCard("已收到付款回報", formatTopupOrder(order))
+      flexCard("已收到", `${formatTopupOrder(order)}\n\n客服確認後會通知你。`)
     );
   }
 
-  if (msg === "查詢訂單") {
+  if (msg === "查詢訂單" || msg === "我的訂單") {
     const order = await findLatestTopupOrder(userId);
     return client.replyMessage(
       event.replyToken,
-      flexCard("訂單查詢", order ? formatTopupOrder(order) : "目前查不到你的代儲訂單。")
+      flexCard("我的訂單", order ? formatTopupOrder(order) : "目前查不到你的訂單。")
     );
+  }
+
+  if (msg === "待處理訂單") {
+    if (!isTopupAdmin(userId, permission)) {
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以查看待處理訂單。"));
+    }
+
+    const orders = await listPendingTopupOrders();
+    const text = orders.length
+      ? orders.map(order => `${order.id}｜${topupStatusText(order.status)}｜${order.product}｜NT$${formatMoney(order.amount)}`).join("\n")
+      : "目前沒有待處理訂單。";
+
+    return client.replyMessage(event.replyToken, flexCard("待處理訂單", text));
   }
 
   const adminMatch = msg.match(/^(核准|完成|退回)\s+(T[A-Z0-9]+)$/i);
   if (adminMatch) {
     if (!isTopupAdmin(userId, permission)) {
-      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以更新代儲訂單。"));
+      return client.replyMessage(event.replyToken, flexCard("權限不足", "只有管理員可以更新訂單。"));
     }
 
     const statusMap = {
@@ -487,15 +518,38 @@ async function handleTopupCommand(event, msg, userId, groupId, permission) {
     }));
 
     if (!order) {
-      return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆代儲訂單。"));
+      return client.replyMessage(event.replyToken, flexCard("查無訂單", "找不到這筆訂單。"));
     }
 
     await client.pushMessage(order.userId, {
       type: "text",
-      text: `你的代儲訂單狀態已更新。\n\n${formatTopupOrder(order)}`
+      text: `你的訂單狀態更新了。\n\n${formatTopupOrder(order)}`
     });
 
-    return client.replyMessage(event.replyToken, flexCard("訂單已更新", formatTopupOrder(order)));
+    return client.replyMessage(event.replyToken, flexCard("已更新", formatTopupOrder(order)));
+  }
+
+  const orderDraft = parseTopupOrderMessage(msg);
+  const isPrivateChat = event.source.type === "user";
+
+  if (orderDraft && (isPrivateChat || msg.startsWith("下單 "))) {
+    const order = await createTopupOrder(
+      userId,
+      groupId,
+      orderDraft.product,
+      orderDraft.amount,
+      orderDraft.note || "未填"
+    );
+
+    await notifyTopupAdmins(order, "新訂單");
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard(
+        "下單成功",
+        `${formatTopupOrder(order)}\n\n${paymentGuide(order.id)}`
+      )
+    );
   }
 
   return null;
