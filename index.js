@@ -85,6 +85,14 @@ const topupPaymentsHeaders = [
   "更新時間"
 ];
 
+const permissionsHeaders = ["群組ID", "使用者ID", "角色", "名稱"];
+const groupConfigHeaders = ["群組ID", "A名稱", "B名稱", "C名稱"];
+const auditLogHeaders = ["時間", "群組ID", "操作者", "動作"];
+const pricingHeaders = ["品項", "金額", "A抽成", "B抽成", "C抽成", "備註"];
+const payrollHeaders = ["時間", "日期", "員工代號", "員工名稱", "品項", "售價", "抽成", "數量", "備註"];
+const personalFinanceHeaders = ["時間", "名稱", "類型", "項目", "金額"];
+const companyFinanceHeaders = ["時間", "名稱", "類型", "項目", "金額"];
+
 async function ensureTopupSheet() {
   const spreadsheet = await sheets.spreadsheets.get({
     spreadsheetId,
@@ -120,6 +128,41 @@ async function ensureTopupSheet() {
       title: "TopupPayments",
       range: "TopupPayments!A1:F1",
       headers: topupPaymentsHeaders
+    },
+    {
+      title: "Permissions",
+      range: "Permissions!A1:D1",
+      headers: permissionsHeaders
+    },
+    {
+      title: "GroupConfig",
+      range: "GroupConfig!A1:D1",
+      headers: groupConfigHeaders
+    },
+    {
+      title: "AuditLog",
+      range: "AuditLog!A1:D1",
+      headers: auditLogHeaders
+    },
+    {
+      title: "Pricing",
+      range: "Pricing!A1:F1",
+      headers: pricingHeaders
+    },
+    {
+      title: "Payroll",
+      range: "Payroll!A1:I1",
+      headers: payrollHeaders
+    },
+    {
+      title: "PersonalFinance",
+      range: "PersonalFinance!A1:E1",
+      headers: personalFinanceHeaders
+    },
+    {
+      title: "CompanyFinance",
+      range: "CompanyFinance!A1:E1",
+      headers: companyFinanceHeaders
     }
   ];
 
@@ -146,7 +189,9 @@ async function ensureTopupSheet() {
       range: sheet.range
     });
 
-    if (!current.data.values || !current.data.values[0]) {
+    const firstRow = current.data.values && current.data.values[0];
+
+    if (!firstRow || firstRow.join("|") !== sheet.headers.join("|")) {
       await updateSheet(sheet.range, [sheet.headers]);
     }
   }
@@ -271,8 +316,265 @@ async function getPermission(userId, groupId) {
 }
 
 async function getGroupConfig(groupId) {
-  const rows = await getSheet("GroupConfig!A:C");
+  const rows = await getSheet("GroupConfig!A:D");
   return rows.find(r => r[0] === groupId);
+}
+
+function staffCodes() {
+  return ["A", "B", "C"];
+}
+
+function normalizeStaffCode(value) {
+  const code = String(value || "").trim().toUpperCase();
+  return staffCodes().includes(code) ? code : "";
+}
+
+function staffNameFromConfig(configRow, code) {
+  const index = { A: 1, B: 2, C: 3 }[code];
+  return (configRow && configRow[index]) || code;
+}
+
+function staffConfigText(configRow) {
+  return staffCodes()
+    .map(code => `${code}：${staffNameFromConfig(configRow, code) || "未設定"}`)
+    .join("\n");
+}
+
+function staffGuide() {
+  return [
+    "使用方式：",
+    "/設定員工 A 小明",
+    "/設定員工 B 小美",
+    "/設定員工 C 小華",
+    "",
+    "登記抽成：",
+    "A 300",
+    "B 300*2 備註",
+    "/抽成 C 500 3 備註",
+    "",
+    "查詢：",
+    "/今日抽成",
+    "/昨日抽成",
+    "/抽成查詢 2026-06-15",
+    "/抽成查詢 A 2026-06-15"
+  ].join("\n");
+}
+
+function pricingGuide() {
+  return [
+    "填表格式 Pricing：",
+    "品項｜金額｜A抽成｜B抽成｜C抽成｜備註",
+    "例：傳說點券｜300｜30｜25｜20｜活動價",
+    "",
+    "指令設定：",
+    "/設定價格 商品 售價 A抽成 B抽成 C抽成",
+    "例：/設定價格 傳說點券 300 30 25 20",
+    "",
+    "舊格式也可用：/設定價格 商品 售價 抽成",
+    "會把 A/B/C 抽成設成同一個金額。"
+  ].join("\n");
+}
+
+function payrollGuide() {
+  return [
+    "登記格式：",
+    "A 金額",
+    "B 金額*數量 備註",
+    "/抽成 C 金額 數量 備註",
+    "",
+    "查詢格式：",
+    "/今日抽成",
+    "/昨日抽成",
+    "/抽成查詢 日期",
+    "/抽成查詢 員工代號 日期"
+  ].join("\n");
+}
+
+function todayTW(offsetDays = 0) {
+  const date = new Date(Date.now() + offsetDays * 86400000);
+  return new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Taipei" }).format(date);
+}
+
+function parseMoney(value) {
+  const normalized = String(value || "").replace(/,/g, "").trim();
+  const amount = Number(normalized);
+  return Number.isFinite(amount) ? amount : NaN;
+}
+
+function parseAmountFormula(rawFormula) {
+  const text = String(rawFormula || "").trim();
+  if (!text) return null;
+  const parts = text.split("*").map(part => parseMoney(part));
+  if (parts.some(value => Number.isNaN(value))) return null;
+  return {
+    price: parts[0],
+    quantity: parts.length > 1 ? parts.slice(1).reduce((total, value) => total * value, 1) : 1,
+    formula: text
+  };
+}
+
+function parsePricingRow(row) {
+  const sharedCommission = parseMoney(row[2]);
+  return {
+    product: row[0] || "",
+    price: parseMoney(row[1]),
+    commissions: {
+      A: Number.isNaN(parseMoney(row[2])) ? 0 : parseMoney(row[2]),
+      B: Number.isNaN(parseMoney(row[3])) ? (Number.isNaN(sharedCommission) ? 0 : sharedCommission) : parseMoney(row[3]),
+      C: Number.isNaN(parseMoney(row[4])) ? (Number.isNaN(sharedCommission) ? 0 : sharedCommission) : parseMoney(row[4])
+    },
+    note: row[5] || ""
+  };
+}
+
+function isHeaderRow(row, headerName) {
+  return String(row[0] || "").trim() === headerName;
+}
+
+async function getPricingRows() {
+  const rows = await getSheet("Pricing!A:F");
+  return rows
+    .filter(row => row.length && !isHeaderRow(row, "品項"))
+    .map(parsePricingRow)
+    .filter(row => row.product && !Number.isNaN(row.price));
+}
+
+async function findPricingByAmount(amount) {
+  const pricing = await getPricingRows();
+  return pricing.find(row => Number(row.price) === Number(amount));
+}
+
+async function upsertStaffName(groupId, code, name) {
+  const rows = await getSheet("GroupConfig!A:D");
+  const idx = rows.findIndex(r => r[0] === groupId);
+  const next = idx >= 0 ? [...rows[idx]] : [groupId, "", "", ""];
+  const column = { A: 1, B: 2, C: 3 }[code];
+  next[column] = name;
+
+  if (idx >= 0) {
+    rows[idx] = next;
+    await updateSheet("GroupConfig!A:D", rows);
+  } else {
+    await appendSheet("GroupConfig!A:D", [next]);
+  }
+}
+
+function parseCommissionCommand(msg, configRow) {
+  let match = msg.match(/^\/抽成\s+(\S+)\s+([0-9,.*]+)(?:\s+(\d+))?(?:\s+([\s\S]+))?$/);
+  if (match) {
+    const code = resolveStaffCode(match[1], configRow);
+    const parsed = parseAmountFormula(match[2]);
+    if (!code || !parsed) return null;
+    return {
+      code,
+      price: parsed.price,
+      quantity: match[3] ? Number(match[3]) : parsed.quantity,
+      note: match[4] || ""
+    };
+  }
+
+  match = msg.match(/^(?:完成\s*)?(\S+)\s+([0-9,.*]+)(?:\s+([\s\S]+))?$/);
+  if (!match) return null;
+
+  const code = resolveStaffCode(match[1], configRow);
+  const parsed = parseAmountFormula(match[2]);
+  if (!code || !parsed) return null;
+
+  return {
+    code,
+    price: parsed.price,
+    quantity: parsed.quantity,
+    note: match[3] || ""
+  };
+}
+
+function resolveStaffCode(value, configRow) {
+  const code = normalizeStaffCode(value);
+  if (code) return code;
+  const name = String(value || "").trim();
+  return staffCodes().find(item => staffNameFromConfig(configRow, item) === name) || "";
+}
+
+async function recordCommission(groupId, actorName, entry, configRow) {
+  const pricing = await findPricingByAmount(entry.price);
+  if (!pricing) {
+    return {
+      ok: false,
+      message: `找不到金額 ${formatMoney(entry.price)} 的價格設定。\n\n${pricingGuide()}`
+    };
+  }
+
+  const staffName = staffNameFromConfig(configRow, entry.code);
+  const unitCommission = Number(pricing.commissions[entry.code] || 0);
+  const quantity = Number(entry.quantity || 1);
+  const totalCommission = unitCommission * quantity;
+  const note = entry.note || actorName || "";
+
+  await appendSheet("Payroll!A:I", [[
+    nowTW(),
+    todayTW(),
+    entry.code,
+    staffName,
+    pricing.product,
+    pricing.price,
+    totalCommission,
+    quantity,
+    note
+  ]]);
+
+  await writeAudit(groupId, actorName, `登記抽成 ${entry.code} ${pricing.price} x ${quantity}`);
+
+  return {
+    ok: true,
+    message: [
+      "已登記抽成",
+      `員工：${entry.code} / ${staffName}`,
+      `品項：${pricing.product}`,
+      `售價：${formatMoney(pricing.price)}`,
+      `數量：${quantity}`,
+      `單筆抽成：${formatMoney(unitCommission)}`,
+      `本次薪水：${formatMoney(totalCommission)}`,
+      `備註：${note || "-"}`
+    ].join("\n")
+  };
+}
+
+async function payrollReport(date, code = "") {
+  const rows = await getSheet("Payroll!A:I");
+  const totals = {};
+  const counts = {};
+  const details = [];
+
+  rows.forEach(row => {
+    if (isHeaderRow(row, "時間")) return;
+    const rowDate = row[1] || String(row[0] || "").slice(0, 10);
+    const rowCode = normalizeStaffCode(row[2]);
+    if (rowDate !== date) return;
+    if (code && rowCode !== code) return;
+
+    const name = row[3] || rowCode;
+    const amount = Number(row[6]) || 0;
+    const quantity = Number(row[7]) || 1;
+    const key = rowCode || name;
+    totals[key] = (totals[key] || 0) + amount;
+    counts[key] = (counts[key] || 0) + quantity;
+    details.push(`${rowCode} ${name}｜${row[4]}｜${formatMoney(row[5])}｜薪水 ${formatMoney(amount)}｜${row[8] || "-"}`);
+  });
+
+  const summary = staffCodes()
+    .filter(item => !code || item === code)
+    .map(item => `${item}：${counts[item] || 0} 筆｜${formatMoney(totals[item] || 0)} 元`)
+    .join("\n");
+
+  return [
+    `日期：${date}`,
+    summary || "無資料",
+    "",
+    "明細：",
+    ...(details.length ? details.slice(0, 20) : ["查無抽成紀錄"]),
+    "",
+    payrollGuide()
+  ].join("\n");
 }
 
 async function writeAudit(groupId, userName, action) {
@@ -789,9 +1091,9 @@ async function replyTopupHelp(event) {
 }
 
 async function replyTopupProducts(event) {
-  const pricing = await getSheet("Pricing!A:C");
+  const pricing = await getPricingRows();
   const text = pricing.length
-    ? `${pricing.map(row => `${row[0]}：NT$${formatMoney(row[1])}`).join("\n")}\n\n${topupOrderGuide()}`
+    ? `${pricing.map(row => `${row.product}：NT$${formatMoney(row.price)}`).join("\n")}\n\n${topupOrderGuide()}`
     : topupOrderGuide();
 
   return client.replyMessage(event.replyToken, flexCard("我要下單", text));
@@ -1180,7 +1482,8 @@ const needsPermission =
   (
     msg.startsWith("/") ||
     /^[+-]/.test(msg) ||
-    /^(完成|收款|退款)/.test(msg)
+    /^(完成|收款|退款)/.test(msg) ||
+    /^(?:完成\s*)?(?:[ABCabc]|\S+)\s+[0-9,.*]+/.test(msg)
   );
 
 if (needsPermission && !permission) {
@@ -1193,9 +1496,10 @@ const actorName = permission ? permission[3] : "";
   if (msg === "/選單") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("工作室控制台", "主選單", [
+      flexCard("工作室控制台", "主選單\n\n抽成快速用法：A 300、B 300*2 備註\n查詢：/今日抽成", [
         { label: "💳 帳務", text: "/查詢" },
         { label: "💰 價格表", text: "/價格表" },
+        { label: "📊 今日抽成", text: "/今日抽成" },
         { label: "👤 個人財務", text: "/我的帳" },
         { label: "➡ 更多", text: "/選單2" }
       ])
@@ -1205,9 +1509,10 @@ const actorName = permission ? permission[3] : "";
   if (msg === "/選單2") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("管理中心", "進階功能", [
+      flexCard("管理中心", "進階功能\n\n員工設定：/設定員工 A 小明\n價格設定：/設定價格 商品 售價 A抽成 B抽成 C抽成", [
         { label: "🏢 公司金流", text: "/金流" },
         { label: "📊 薪資排行", text: "/薪資排行" },
+        { label: "👥 員工設定", text: "/員工" },
         { label: "⚙ 狀態", text: "/狀態" },
         { label: "⬅ 返回", text: "/選單" }
       ])
@@ -1233,29 +1538,58 @@ const actorName = permission ? permission[3] : "";
   if (parts.length < 2) {
     return client.replyMessage(
       event.replyToken,
-      flexCard("格式錯誤", "/設定 A名稱 B名稱")
+      flexCard("格式錯誤", "/設定 A名稱 B名稱 C名稱\n也可用：/設定員工 A 小明")
     );
   }
 
   const aName = parts[0];
   const bName = parts[1];
+  const cName = parts[2] || "";
 
-  const rows = await getSheet("GroupConfig!A:C");
+  const rows = await getSheet("GroupConfig!A:D");
   const idx = rows.findIndex(r => r[0] === groupId);
 
   if (idx >= 0) {
-    rows[idx] = [groupId, aName, bName];
-    await updateSheet("GroupConfig!A:C", rows);
+    rows[idx] = [groupId, aName, bName, cName || rows[idx][3] || ""];
+    await updateSheet("GroupConfig!A:D", rows);
   } else {
-    await appendSheet("GroupConfig!A:C", [[groupId, aName, bName]]);
+    await appendSheet("GroupConfig!A:D", [[groupId, aName, bName, cName]]);
   }
 
   return client.replyMessage(
     event.replyToken,
     flexCard(
       "設定完成",
-      `A：${aName}\nB：${bName}`
+      `A：${aName}\nB：${bName}\nC：${cName || "未設定"}\n\n${staffGuide()}`
     )
+  );
+}
+
+  if (msg.startsWith("/設定員工 ")) {
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可設定員工")
+    );
+  }
+
+  const match = msg.match(/^\/設定員工\s+([ABCabc])\s+(.+)$/);
+
+  if (!match) {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("設定員工格式", staffGuide())
+    );
+  }
+
+  const code = normalizeStaffCode(match[1]);
+  const name = match[2].trim();
+  await upsertStaffName(groupId, code, name);
+  const configRow = await getGroupConfig(groupId);
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("員工已設定", `${staffConfigText(configRow)}\n\n${payrollGuide()}`)
   );
 }
 
@@ -1268,7 +1602,7 @@ const actorName = permission ? permission[3] : "";
   }
 
   const aName = msg.replace("/設定A ", "").trim();
-  const rows = await getSheet("GroupConfig!A:C");
+  const rows = await getSheet("GroupConfig!A:D");
 
   const idx = rows.findIndex(r => r[0] === groupId);
 
@@ -1276,21 +1610,23 @@ const actorName = permission ? permission[3] : "";
     rows[idx] = [
       groupId,
       aName,
-      rows[idx][2] || ""
+      rows[idx][2] || "",
+      rows[idx][3] || ""
     ];
 
-    await updateSheet("GroupConfig!A:C", rows);
+    await updateSheet("GroupConfig!A:D", rows);
   } else {
-    await appendSheet("GroupConfig!A:C", [[
+    await appendSheet("GroupConfig!A:D", [[
       groupId,
       aName,
+      "",
       ""
     ]]);
   }
 
   return client.replyMessage(
     event.replyToken,
-    flexCard("設定完成", `A：${aName}`)
+    flexCard("設定完成", `A：${aName}\n\n${payrollGuide()}`)
   );
 }
 
@@ -1303,7 +1639,7 @@ const actorName = permission ? permission[3] : "";
   }
 
   const bName = msg.replace("/設定B ", "").trim();
-  const rows = await getSheet("GroupConfig!A:C");
+  const rows = await getSheet("GroupConfig!A:D");
 
   const idx = rows.findIndex(r => r[0] === groupId);
 
@@ -1311,39 +1647,58 @@ const actorName = permission ? permission[3] : "";
     rows[idx] = [
       groupId,
       rows[idx][1] || "",
-      bName
+      bName,
+      rows[idx][3] || ""
     ];
 
-    await updateSheet("GroupConfig!A:C", rows);
+    await updateSheet("GroupConfig!A:D", rows);
   } else {
-    await appendSheet("GroupConfig!A:C", [[
+    await appendSheet("GroupConfig!A:D", [[
       groupId,
       "",
-      bName
+      bName,
+      ""
     ]]);
   }
 
   return client.replyMessage(
     event.replyToken,
-    flexCard("設定完成", `B：${bName}`)
+    flexCard("設定完成", `B：${bName}\n\n${payrollGuide()}`)
   );
 }
 
-  if (msg === "/角色") {
+  if (msg.startsWith("/設定C ")) {
+  if (role !== "admin") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("限制", "只有 admin 可設定")
+    );
+  }
+
+  const cName = msg.replace("/設定C ", "").trim();
+  await upsertStaffName(groupId, "C", cName);
+
+  return client.replyMessage(
+    event.replyToken,
+    flexCard("設定完成", `C：${cName}\n\n${payrollGuide()}`)
+  );
+}
+
+  if (msg === "/角色" || msg === "/員工") {
     const configRow = await getGroupConfig(groupId);
 
     if (!configRow) {
       return client.replyMessage(
         event.replyToken,
-        flexCard("未設定", "請先設定 A / B")
+        flexCard("未設定", staffGuide())
       );
     }
 
     return client.replyMessage(
       event.replyToken,
       flexCard(
-        "群組角色",
-        `A：${configRow[1]}\nB：${configRow[2]}`
+        "員工設定",
+        `${staffConfigText(configRow)}\n\n${staffGuide()}`
       )
     );
   }
@@ -1408,22 +1763,22 @@ if (msg.startsWith("/拔權 ")) {
   );
 }
   if (msg === "/價格表") {
-    const pricing = await getSheet("Pricing!A:C");
+    const pricing = await getPricingRows();
 
     if (!pricing.length) {
       return client.replyMessage(
         event.replyToken,
-        flexCard("價格表", "尚未設定價格")
+        flexCard("價格表", `尚未設定價格\n\n${pricingGuide()}`)
       );
     }
 
     const text = pricing
-      .map(r => `${r[0]}｜${formatMoney(r[1])}｜抽成 ${formatMoney(r[2])}`)
+      .map(r => `${r.product}｜${formatMoney(r.price)}｜A ${formatMoney(r.commissions.A)}｜B ${formatMoney(r.commissions.B)}｜C ${formatMoney(r.commissions.C)}${r.note ? `｜${r.note}` : ""}`)
       .join("\n");
 
     return client.replyMessage(
       event.replyToken,
-      flexCard("價格表", text)
+      flexCard("價格表", `${text}\n\n${pricingGuide()}`)
     );
   }
 
@@ -1437,25 +1792,35 @@ if (msg.startsWith("/拔權 ")) {
 
     const parts = msg.split(" ");
 
-    if (parts.length !== 4) {
+    if (![4, 6, 7].includes(parts.length)) {
       return client.replyMessage(
         event.replyToken,
-        flexCard("格式錯誤", "/設定價格 商品 售價 抽成")
+        flexCard("格式錯誤", pricingGuide())
       );
     }
 
     const product = parts[1];
     const price = Number(parts[2]);
-    const commission = Number(parts[3]);
+    const aCommission = Number(parts[3]);
+    const bCommission = parts.length >= 6 ? Number(parts[4]) : aCommission;
+    const cCommission = parts.length >= 6 ? Number(parts[5]) : aCommission;
+    const note = parts.length >= 7 ? parts.slice(6).join(" ") : "";
 
-    const pricing = await getSheet("Pricing!A:C");
+    if ([price, aCommission, bCommission, cCommission].some(Number.isNaN)) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("格式錯誤", pricingGuide())
+      );
+    }
+
+    const pricing = await getSheet("Pricing!A:F");
     const existingIndex = pricing.findIndex(r => Number(r[1]) === price);
 
     if (existingIndex >= 0) {
-      const oldCommission = pricing[existingIndex][2];
+      const oldRow = parsePricingRow(pricing[existingIndex]);
 
-      pricing[existingIndex] = [product, price, commission];
-      await updateSheet("Pricing!A:C", pricing);
+      pricing[existingIndex] = [product, price, aCommission, bCommission, cCommission, note || oldRow.note || ""];
+      await updateSheet("Pricing!A:F", pricing);
 
       await writeAudit(groupId, actorName, `更新價格 ${price}`);
 
@@ -1465,13 +1830,15 @@ if (msg.startsWith("/拔權 ")) {
           "價格已更新",
           `商品：${product}
 售價：${formatMoney(price)}
-舊抽成：${formatMoney(oldCommission)}
-新抽成：${formatMoney(commission)}`
+舊抽成：A ${formatMoney(oldRow.commissions.A)} / B ${formatMoney(oldRow.commissions.B)} / C ${formatMoney(oldRow.commissions.C)}
+新抽成：A ${formatMoney(aCommission)} / B ${formatMoney(bCommission)} / C ${formatMoney(cCommission)}
+
+${pricingGuide()}`
         )
       );
     }
 
-    await appendSheet("Pricing!A:C", [[product, price, commission]]);
+    await appendSheet("Pricing!A:F", [[product, price, aCommission, bCommission, cCommission, note]]);
 
     await writeAudit(groupId, actorName, `新增價格 ${price}`);
 
@@ -1481,7 +1848,11 @@ if (msg.startsWith("/拔權 ")) {
         "價格新增",
         `${product}
 售價：${formatMoney(price)}
-抽成：${formatMoney(commission)}`
+A抽成：${formatMoney(aCommission)}
+B抽成：${formatMoney(bCommission)}
+C抽成：${formatMoney(cCommission)}
+
+${pricingGuide()}`
       )
     );
   }
@@ -1495,11 +1866,11 @@ if (msg.startsWith("/拔權 ")) {
     }
 
     const price = Number(msg.replace("/刪除價格 ", "").trim());
-    const pricing = await getSheet("Pricing!A:C");
+    const pricing = await getSheet("Pricing!A:F");
 
     const filtered = pricing.filter(r => Number(r[1]) !== price);
 
-    await updateSheet("Pricing!A:C", filtered);
+    await updateSheet("Pricing!A:F", filtered);
 
     await writeAudit(groupId, actorName, `刪除價格 ${price}`);
 
@@ -1510,6 +1881,49 @@ if (msg.startsWith("/拔權 ")) {
   }
 
   const configRow = await getGroupConfig(groupId);
+
+  if (msg === "/今日抽成" || msg === "/今日薪水") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("今日抽成", await payrollReport(todayTW()))
+    );
+  }
+
+  if (msg === "/昨日抽成" || msg === "/昨日薪水") {
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("昨日抽成", await payrollReport(todayTW(-1)))
+    );
+  }
+
+  if (msg.startsWith("/抽成查詢 ")) {
+    const parts = msg.split(/\s+/);
+    const code = parts.length >= 3 ? normalizeStaffCode(parts[1]) : "";
+    const date = code ? parts[2] : parts[1];
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("抽成查詢格式", payrollGuide())
+      );
+    }
+
+    return client.replyMessage(
+      event.replyToken,
+      flexCard("抽成查詢", await payrollReport(date, code))
+    );
+  }
+
+  if (configRow) {
+    const commissionEntry = parseCommissionCommand(msg, configRow);
+    if (commissionEntry) {
+      const result = await recordCommission(groupId, actorName, commissionEntry, configRow);
+      return client.replyMessage(
+        event.replyToken,
+        flexCard(result.ok ? "抽成已記錄" : "抽成記錄失敗", result.message)
+      );
+    }
+  }
 
   if (configRow) {
   const aName = configRow[1];
@@ -1604,6 +2018,7 @@ if (!action) {
         "帳務更新",
         `A：${aName}
 B：${bName}
+C：${configRow[3] || "未設定"}
 
 前次金額：${formatMoney(balance)}
 本次變動：${sign}${rawFormula} = ${formatMoney(signedAmount)}
@@ -1623,7 +2038,7 @@ ${statusText}
   if (!configRow) {
     return client.replyMessage(
       event.replyToken,
-      flexCard("未設定", "請先設定 A / B")
+      flexCard("未設定", staffGuide())
     );
   }
 
@@ -1661,6 +2076,7 @@ ${statusText}
       "帳務查詢",
       `A：${aName}
 B：${bName}
+C：${configRow[3] || "未設定"}
 
 最後變動：${lastFormula}
 備註：${lastNote}
@@ -1684,7 +2100,7 @@ ${statusText}`
   if (!configRow) {
     return client.replyMessage(
       event.replyToken,
-      flexCard("未設定", "請先設定 A / B")
+      flexCard("未設定", staffGuide())
     );
   }
 
@@ -1773,15 +2189,18 @@ ${statusText}`
 }
   if (msg.startsWith("/薪資 ")) {
     const target = msg.replace("/薪資 ", "").trim();
-    const rows = await getSheet("Payroll!A:E");
+    const code = normalizeStaffCode(target);
+    const rows = await getSheet("Payroll!A:I");
 
     let count = 0;
     let total = 0;
 
     rows.forEach(r => {
-      if (r[1] === target) {
-        count++;
-        total += Number(r[4]) || 0;
+      if (isHeaderRow(r, "時間")) return;
+      const matches = code ? normalizeStaffCode(r[2]) === code : r[3] === target || r[1] === target;
+      if (matches) {
+        count += Number(r[7]) || 1;
+        total += Number(r[6] !== undefined ? r[6] : r[4]) || 0;
       }
     });
 
@@ -1790,18 +2209,23 @@ ${statusText}`
       flexCard(
         `${target} 薪資`,
         `訂單數：${count}
-實領：${formatMoney(total)}`
+實領：${formatMoney(total)}
+
+${payrollGuide()}`
       )
     );
   }
 
   if (msg === "/薪資排行") {
-    const rows = await getSheet("Payroll!A:E");
+    const rows = await getSheet("Payroll!A:I");
     const map = {};
 
     rows.forEach(r => {
-      const name = r[1];
-      const amount = Number(r[4]) || 0;
+      if (isHeaderRow(r, "時間")) return;
+      const isNewPayrollRow = Boolean(normalizeStaffCode(r[2]));
+      const name = isNewPayrollRow ? (r[3] || r[2]) : r[1];
+      const amount = Number(isNewPayrollRow ? r[6] : r[4]) || 0;
+      if (!name) return;
       map[name] = (map[name] || 0) + amount;
     });
 
@@ -1813,7 +2237,7 @@ ${statusText}`
 
     return client.replyMessage(
       event.replyToken,
-      flexCard("薪資排行", ranking || "無資料")
+      flexCard("薪資排行", `${ranking || "無資料"}\n\n${payrollGuide()}`)
     );
   }
 

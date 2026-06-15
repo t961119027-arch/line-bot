@@ -72,8 +72,8 @@ const sheetDefinitions = [
   },
   {
     title: "GroupConfig",
-    range: "GroupConfig!A1:C1",
-    headers: ["群組ID", "A名稱", "B名稱"]
+    range: "GroupConfig!A1:D1",
+    headers: ["群組ID", "A名稱", "B名稱", "C名稱"]
   },
   {
     title: "AuditLog",
@@ -82,8 +82,8 @@ const sheetDefinitions = [
   },
   {
     title: "Pricing",
-    range: "Pricing!A1:C1",
-    headers: ["品項", "金額", "佣金"]
+    range: "Pricing!A1:F1",
+    headers: ["品項", "金額", "A抽成", "B抽成", "C抽成", "備註"]
   },
   {
     title: "GroupLedger",
@@ -92,8 +92,8 @@ const sheetDefinitions = [
   },
   {
     title: "Payroll",
-    range: "Payroll!A1:E1",
-    headers: ["時間", "名稱", "項目", "備註", "金額"]
+    range: "Payroll!A1:I1",
+    headers: ["時間", "日期", "員工代號", "員工名稱", "品項", "售價", "抽成", "數量", "備註"]
   },
   {
     title: "PersonalFinance",
