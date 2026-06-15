@@ -2,6 +2,8 @@ require("dotenv").config();
 const express = require("express");
 const line = require("@line/bot-sdk");
 const { google } = require("googleapis");
+const fs = require("fs");
+const path = require("path");
 
 const requiredEnv = [
   "CHANNEL_ACCESS_TOKEN",
@@ -18,6 +20,9 @@ if (missingEnv.length) {
 }
 
 const app = express();
+const reportsDir = path.join(__dirname, "reports");
+fs.mkdirSync(reportsDir, { recursive: true });
+app.use("/reports", express.static(reportsDir));
 
 const config = {
   channelAccessToken: process.env.CHANNEL_ACCESS_TOKEN,
@@ -708,10 +713,29 @@ async function recordBatchCommission(groupId, actorName, batch, configRow) {
 }
 
 async function payrollReport(date, code = "") {
+  const report = await collectPayrollDay(date, code);
+  const summary = staffCodes()
+    .filter(item => !code || item === code)
+    .map(item => `${item}：${report.counts[item] || 0} 筆｜${formatMoney(report.totals[item] || 0)} 元`)
+    .join("\n");
+
+  return [
+    `日期：${date}`,
+    summary || "無資料",
+    "",
+    "明細：",
+    ...(report.textDetails.length ? report.textDetails.slice(0, 20) : ["查無抽成紀錄"]),
+    "",
+    payrollGuide()
+  ].join("\n");
+}
+
+async function collectPayrollDay(date, code = "") {
   const rows = await getSheet("Payroll!A:J");
   const totals = {};
   const counts = {};
   const details = [];
+  const textDetails = [];
 
   rows.forEach(row => {
     if (isHeaderRow(row, "時間")) return;
@@ -726,24 +750,203 @@ async function payrollReport(date, code = "") {
     const key = rowCode || name;
     totals[key] = (totals[key] || 0) + amount;
     counts[key] = (counts[key] || 0) + quantity;
-    details.push(`${rowCode} ${name}｜${row[4]}｜${formatMoney(row[5])}｜薪水 ${formatMoney(amount)}｜${row[9] ? `8591:${row[9]}` : row[8] || "-"}`);
+    const detail = {
+      time: row[0] || "",
+      date: rowDate,
+      code: rowCode,
+      name,
+      item: row[4] || "",
+      price: Number(row[5]) || 0,
+      commission: amount,
+      quantity,
+      note: row[8] || "",
+      dealId: row[9] || ""
+    };
+    details.push(detail);
+    textDetails.push(`${rowCode} ${name}｜${detail.item}｜${formatMoney(detail.price)}｜薪水 ${formatMoney(amount)}｜${detail.dealId ? `8591:${detail.dealId}` : detail.note || "-"}`);
   });
 
-  const summary = staffCodes()
-    .filter(item => !code || item === code)
-    .map(item => `${item}：${counts[item] || 0} 筆｜${formatMoney(totals[item] || 0)} 元`)
-    .join("\n");
-
-  return [
-    `日期：${date}`,
-    summary || "無資料",
-    "",
-    "明細：",
-    ...(details.length ? details.slice(0, 20) : ["查無抽成紀錄"]),
-    "",
-    payrollGuide()
-  ].join("\n");
+  return { totals, counts, details, textDetails };
 }
+
+async function createPayrollExcelReport(date, code = "") {
+  const report = await collectPayrollDay(date, code);
+  const rows = [
+    ["薪水日報", "", "", "", "", "", "", "", "", ""],
+    ["日期", date, "", "", "", "", "", "", "", ""],
+    [],
+    ["員工代號", "筆數", "薪水合計"],
+    ...staffCodes()
+      .filter(item => !code || item === code)
+      .map(item => [item, report.counts[item] || 0, report.totals[item] || 0]),
+    [],
+    ["時間", "日期", "員工代號", "員工名稱", "品項", "售價", "抽成", "數量", "備註", "8591編號"],
+    ...report.details.map(item => [
+      item.time,
+      item.date,
+      item.code,
+      item.name,
+      item.item,
+      item.price,
+      item.commission,
+      item.quantity,
+      item.note,
+      item.dealId
+    ])
+  ];
+  const safeCode = code ? `-${code}` : "";
+  const filename = `payroll-${date}${safeCode}-${Date.now()}.xlsx`;
+  const filePath = path.join(reportsDir, filename);
+  fs.writeFileSync(filePath, buildXlsx(rows));
+  return {
+    filename,
+    url: `${publicBaseUrl()}/reports/${filename}`,
+    report
+  };
+}
+
+function publicBaseUrl() {
+  return (process.env.PUBLIC_BASE_URL || "https://line-bot-7me2.onrender.com").replace(/\/+$/, "");
+}
+
+function buildXlsx(rows) {
+  const files = {
+    "[Content_Types].xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Types xmlns="http://schemas.openxmlformats.org/package/2006/content-types">
+<Default Extension="rels" ContentType="application/vnd.openxmlformats-package.relationships+xml"/>
+<Default Extension="xml" ContentType="application/xml"/>
+<Override PartName="/xl/workbook.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet.main+xml"/>
+<Override PartName="/xl/worksheets/sheet1.xml" ContentType="application/vnd.openxmlformats-officedocument.spreadsheetml.worksheet+xml"/>
+</Types>`,
+    "_rels/.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/officeDocument" Target="xl/workbook.xml"/>
+</Relationships>`,
+    "xl/workbook.xml": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<workbook xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main" xmlns:r="http://schemas.openxmlformats.org/officeDocument/2006/relationships">
+<sheets><sheet name="薪水日報" sheetId="1" r:id="rId1"/></sheets>
+</workbook>`,
+    "xl/_rels/workbook.xml.rels": `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<Relationships xmlns="http://schemas.openxmlformats.org/package/2006/relationships">
+<Relationship Id="rId1" Type="http://schemas.openxmlformats.org/officeDocument/2006/relationships/worksheet" Target="worksheets/sheet1.xml"/>
+</Relationships>`,
+    "xl/worksheets/sheet1.xml": worksheetXml(rows)
+  };
+  return zipFiles(files);
+}
+
+function worksheetXml(rows) {
+  const xmlRows = rows.map((row, rowIndex) => {
+    const cells = (row || []).map((value, colIndex) => cellXml(rowIndex + 1, colIndex + 1, value)).join("");
+    return `<row r="${rowIndex + 1}">${cells}</row>`;
+  }).join("");
+  return `<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<worksheet xmlns="http://schemas.openxmlformats.org/spreadsheetml/2006/main">
+<sheetData>${xmlRows}</sheetData>
+</worksheet>`;
+}
+
+function cellXml(row, col, value) {
+  const ref = `${columnName(col)}${row}`;
+  if (value === undefined || value === null || value === "") return `<c r="${ref}"/>`;
+  if (typeof value === "number" && Number.isFinite(value)) return `<c r="${ref}"><v>${value}</v></c>`;
+  return `<c r="${ref}" t="inlineStr"><is><t>${xmlEscape(String(value))}</t></is></c>`;
+}
+
+function columnName(index) {
+  let name = "";
+  let current = index;
+  while (current > 0) {
+    const mod = (current - 1) % 26;
+    name = String.fromCharCode(65 + mod) + name;
+    current = Math.floor((current - mod) / 26);
+  }
+  return name;
+}
+
+function xmlEscape(value) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;")
+    .replace(/'/g, "&apos;");
+}
+
+function zipFiles(files) {
+  const localParts = [];
+  const centralParts = [];
+  let offset = 0;
+
+  Object.entries(files).forEach(([name, content]) => {
+    const nameBuffer = Buffer.from(name);
+    const data = Buffer.from(content);
+    const crc = crc32(data);
+    const localHeader = Buffer.alloc(30);
+    localHeader.writeUInt32LE(0x04034b50, 0);
+    localHeader.writeUInt16LE(20, 4);
+    localHeader.writeUInt16LE(0, 6);
+    localHeader.writeUInt16LE(0, 8);
+    localHeader.writeUInt16LE(0, 10);
+    localHeader.writeUInt16LE(0, 12);
+    localHeader.writeUInt32LE(crc, 14);
+    localHeader.writeUInt32LE(data.length, 18);
+    localHeader.writeUInt32LE(data.length, 22);
+    localHeader.writeUInt16LE(nameBuffer.length, 26);
+    localHeader.writeUInt16LE(0, 28);
+    localParts.push(localHeader, nameBuffer, data);
+
+    const centralHeader = Buffer.alloc(46);
+    centralHeader.writeUInt32LE(0x02014b50, 0);
+    centralHeader.writeUInt16LE(20, 4);
+    centralHeader.writeUInt16LE(20, 6);
+    centralHeader.writeUInt16LE(0, 8);
+    centralHeader.writeUInt16LE(0, 10);
+    centralHeader.writeUInt16LE(0, 12);
+    centralHeader.writeUInt16LE(0, 14);
+    centralHeader.writeUInt32LE(crc, 16);
+    centralHeader.writeUInt32LE(data.length, 20);
+    centralHeader.writeUInt32LE(data.length, 24);
+    centralHeader.writeUInt16LE(nameBuffer.length, 28);
+    centralHeader.writeUInt16LE(0, 30);
+    centralHeader.writeUInt16LE(0, 32);
+    centralHeader.writeUInt16LE(0, 34);
+    centralHeader.writeUInt16LE(0, 36);
+    centralHeader.writeUInt32LE(0, 38);
+    centralHeader.writeUInt32LE(offset, 42);
+    centralParts.push(centralHeader, nameBuffer);
+
+    offset += localHeader.length + nameBuffer.length + data.length;
+  });
+
+  const centralSize = centralParts.reduce((sum, part) => sum + part.length, 0);
+  const end = Buffer.alloc(22);
+  end.writeUInt32LE(0x06054b50, 0);
+  end.writeUInt16LE(0, 4);
+  end.writeUInt16LE(0, 6);
+  end.writeUInt16LE(Object.keys(files).length, 8);
+  end.writeUInt16LE(Object.keys(files).length, 10);
+  end.writeUInt32LE(centralSize, 12);
+  end.writeUInt32LE(offset, 16);
+  end.writeUInt16LE(0, 20);
+  return Buffer.concat([...localParts, ...centralParts, end]);
+}
+
+function crc32(buffer) {
+  let crc = -1;
+  for (let i = 0; i < buffer.length; i++) {
+    crc = (crc >>> 8) ^ crcTable[(crc ^ buffer[i]) & 0xff];
+  }
+  return (crc ^ -1) >>> 0;
+}
+
+const crcTable = Array.from({ length: 256 }, (_, index) => {
+  let current = index;
+  for (let bit = 0; bit < 8; bit++) {
+    current = current & 1 ? 0xedb88320 ^ (current >>> 1) : current >>> 1;
+  }
+  return current >>> 0;
+});
 
 async function payrollDealExists(dealId) {
   const rows = await getSheet("Payroll!A:J");
@@ -1669,10 +1872,10 @@ const actorName = permission ? permission[3] : "";
   if (msg === "/選單") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("工作室控制台", "主選單\n\n抽成快速用法：/員工 A 1290 90 4554566\n查詢：/今日抽成", [
+      flexCard("工作室控制台", "主選單\n\n抽成快速用法：/員工 A 1290 90 4554566\nExcel薪水報表：/薪水", [
         { label: "💳 帳務", text: "/查詢" },
         { label: "💰 價格表", text: "/價格表" },
-        { label: "📊 今日抽成", text: "/今日抽成" },
+        { label: "📊 薪水報表", text: "/薪水" },
         { label: "👤 個人財務", text: "/我的帳" },
         { label: "➡ 更多", text: "/選單2" }
       ])
@@ -2054,6 +2257,43 @@ ${pricingGuide()}`
   }
 
   const configRow = await getGroupConfig(groupId);
+
+  if (msg === "/薪水" || msg.startsWith("/薪水 ")) {
+    const parts = msg.split(/\s+/);
+    const maybeCode = parts[1] ? normalizeStaffCode(parts[1]) : "";
+    const date = maybeCode ? (parts[2] || todayTW()) : (parts[1] || todayTW());
+
+    if (!/^\d{4}-\d{2}-\d{2}$/.test(date)) {
+      return client.replyMessage(
+        event.replyToken,
+        flexCard("薪水格式", [
+          "使用方式：",
+          "/薪水",
+          "/薪水 2026-06-15",
+          "/薪水 A 2026-06-15"
+        ].join("\n"))
+      );
+    }
+
+    const excel = await createPayrollExcelReport(date, maybeCode);
+    const lines = [
+      "【薪水日報】",
+      `日期：${date}`,
+      maybeCode ? `員工：${maybeCode}` : "員工：全部",
+      "",
+      ...staffCodes()
+        .filter(item => !maybeCode || item === maybeCode)
+        .map(item => `${item}：${excel.report.counts[item] || 0} 筆｜${formatMoney(excel.report.totals[item] || 0)} 元`),
+      "",
+      "Excel報表：",
+      excel.url
+    ];
+
+    return client.replyMessage(event.replyToken, {
+      type: "text",
+      text: lines.join("\n")
+    });
+  }
 
   if (msg === "/今日抽成" || msg === "/今日薪水") {
     return client.replyMessage(
