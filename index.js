@@ -89,7 +89,7 @@ const permissionsHeaders = ["群組ID", "使用者ID", "角色", "名稱"];
 const groupConfigHeaders = ["群組ID", "A名稱", "B名稱", "C名稱"];
 const auditLogHeaders = ["時間", "群組ID", "操作者", "動作"];
 const pricingHeaders = ["品項", "金額", "A抽成", "B抽成", "C抽成", "備註"];
-const payrollHeaders = ["時間", "日期", "員工代號", "員工名稱", "品項", "售價", "抽成", "數量", "備註"];
+const payrollHeaders = ["時間", "日期", "員工代號", "員工名稱", "品項", "售價", "抽成", "數量", "備註", "8591編號"];
 const personalFinanceHeaders = ["時間", "名稱", "類型", "項目", "金額"];
 const companyFinanceHeaders = ["時間", "名稱", "類型", "項目", "金額"];
 
@@ -151,7 +151,7 @@ async function ensureTopupSheet() {
     },
     {
       title: "Payroll",
-      range: "Payroll!A1:I1",
+      range: "Payroll!A1:J1",
       headers: payrollHeaders
     },
     {
@@ -348,6 +348,7 @@ function staffGuide() {
     "/設定員工 C 小華",
     "",
     "登記抽成：",
+    "/員工 A 1290 90 4554566",
     "A 300",
     "B 300*2 備註",
     "/抽成 C 500 3 備註",
@@ -378,6 +379,12 @@ function pricingGuide() {
 function payrollGuide() {
   return [
     "登記格式：",
+    "/員工 A 售價 抽成 8591編號",
+    "例：/員工 A 1290 90 4554566",
+    "",
+    "8591編號會防止重複登記。",
+    "",
+    "舊格式也可用：",
     "A 金額",
     "B 金額*數量 備註",
     "/抽成 C 金額 數量 備註",
@@ -460,12 +467,30 @@ async function upsertStaffName(groupId, code, name) {
 }
 
 function parseCommissionCommand(msg, configRow) {
+  let directMatch = msg.match(/^\/員工\s+(\S+)\s+([0-9,]+)\s+([0-9,]+)\s+(\S+)(?:\s+([\s\S]+))?$/);
+  if (directMatch) {
+    const code = resolveStaffCode(directMatch[1], configRow);
+    const price = parseMoney(directMatch[2]);
+    const commission = parseMoney(directMatch[3]);
+    if (!code || Number.isNaN(price) || Number.isNaN(commission)) return null;
+    return {
+      mode: "direct",
+      code,
+      price,
+      commission,
+      dealId: directMatch[4],
+      quantity: 1,
+      note: directMatch[5] || ""
+    };
+  }
+
   let match = msg.match(/^\/抽成\s+(\S+)\s+([0-9,.*]+)(?:\s+(\d+))?(?:\s+([\s\S]+))?$/);
   if (match) {
     const code = resolveStaffCode(match[1], configRow);
     const parsed = parseAmountFormula(match[2]);
     if (!code || !parsed) return null;
     return {
+      mode: "pricing",
       code,
       price: parsed.price,
       quantity: match[3] ? Number(match[3]) : parsed.quantity,
@@ -481,6 +506,7 @@ function parseCommissionCommand(msg, configRow) {
   if (!code || !parsed) return null;
 
   return {
+    mode: "pricing",
     code,
     price: parsed.price,
     quantity: parsed.quantity,
@@ -496,6 +522,47 @@ function resolveStaffCode(value, configRow) {
 }
 
 async function recordCommission(groupId, actorName, entry, configRow) {
+  if (entry.mode === "direct") {
+    if (await payrollDealExists(entry.dealId)) {
+      return {
+        ok: false,
+        message: `8591編號 ${entry.dealId} 已登記過，沒有重複計入薪水。`
+      };
+    }
+
+    const staffName = staffNameFromConfig(configRow, entry.code);
+    const note = entry.note || actorName || "";
+
+    await appendSheet("Payroll!A:J", [[
+      nowTW(),
+      todayTW(),
+      entry.code,
+      staffName,
+      "LINE登記",
+      entry.price,
+      entry.commission,
+      1,
+      note,
+      entry.dealId
+    ]]);
+
+    await writeAudit(groupId, actorName, `登記員工抽成 ${entry.code} ${entry.price} ${entry.commission} ${entry.dealId}`);
+
+    return {
+      ok: true,
+      message: [
+        "已登記員工抽成",
+        `員工：${entry.code} / ${staffName}`,
+        `售價：${formatMoney(entry.price)}`,
+        `抽成薪水：${formatMoney(entry.commission)}`,
+        `8591編號：${entry.dealId}`,
+        `備註：${note || "-"}`,
+        "",
+        "同一個 8591 編號之後不會重複計入。"
+      ].join("\n")
+    };
+  }
+
   const pricing = await findPricingByAmount(entry.price);
   if (!pricing) {
     return {
@@ -510,7 +577,7 @@ async function recordCommission(groupId, actorName, entry, configRow) {
   const totalCommission = unitCommission * quantity;
   const note = entry.note || actorName || "";
 
-  await appendSheet("Payroll!A:I", [[
+  await appendSheet("Payroll!A:J", [[
     nowTW(),
     todayTW(),
     entry.code,
@@ -519,7 +586,8 @@ async function recordCommission(groupId, actorName, entry, configRow) {
     pricing.price,
     totalCommission,
     quantity,
-    note
+    note,
+    ""
   ]]);
 
   await writeAudit(groupId, actorName, `登記抽成 ${entry.code} ${pricing.price} x ${quantity}`);
@@ -540,7 +608,7 @@ async function recordCommission(groupId, actorName, entry, configRow) {
 }
 
 async function payrollReport(date, code = "") {
-  const rows = await getSheet("Payroll!A:I");
+  const rows = await getSheet("Payroll!A:J");
   const totals = {};
   const counts = {};
   const details = [];
@@ -558,7 +626,7 @@ async function payrollReport(date, code = "") {
     const key = rowCode || name;
     totals[key] = (totals[key] || 0) + amount;
     counts[key] = (counts[key] || 0) + quantity;
-    details.push(`${rowCode} ${name}｜${row[4]}｜${formatMoney(row[5])}｜薪水 ${formatMoney(amount)}｜${row[8] || "-"}`);
+    details.push(`${rowCode} ${name}｜${row[4]}｜${formatMoney(row[5])}｜薪水 ${formatMoney(amount)}｜${row[9] ? `8591:${row[9]}` : row[8] || "-"}`);
   });
 
   const summary = staffCodes()
@@ -575,6 +643,11 @@ async function payrollReport(date, code = "") {
     "",
     payrollGuide()
   ].join("\n");
+}
+
+async function payrollDealExists(dealId) {
+  const rows = await getSheet("Payroll!A:J");
+  return rows.some(row => String(row[9] || "").trim() === String(dealId || "").trim());
 }
 
 async function writeAudit(groupId, userName, action) {
@@ -1496,7 +1569,7 @@ const actorName = permission ? permission[3] : "";
   if (msg === "/選單") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("工作室控制台", "主選單\n\n抽成快速用法：A 300、B 300*2 備註\n查詢：/今日抽成", [
+      flexCard("工作室控制台", "主選單\n\n抽成快速用法：/員工 A 1290 90 4554566\n查詢：/今日抽成", [
         { label: "💳 帳務", text: "/查詢" },
         { label: "💰 價格表", text: "/價格表" },
         { label: "📊 今日抽成", text: "/今日抽成" },
@@ -1509,7 +1582,7 @@ const actorName = permission ? permission[3] : "";
   if (msg === "/選單2") {
     return client.replyMessage(
       event.replyToken,
-      flexCard("管理中心", "進階功能\n\n員工設定：/設定員工 A 小明\n價格設定：/設定價格 商品 售價 A抽成 B抽成 C抽成", [
+      flexCard("管理中心", "進階功能\n\n員工登記：/員工 A 售價 抽成 8591編號\n員工設定：/設定員工 A 小明", [
         { label: "🏢 公司金流", text: "/金流" },
         { label: "📊 薪資排行", text: "/薪資排行" },
         { label: "👥 員工設定", text: "/員工" },
@@ -2190,7 +2263,7 @@ ${statusText}`
   if (msg.startsWith("/薪資 ")) {
     const target = msg.replace("/薪資 ", "").trim();
     const code = normalizeStaffCode(target);
-    const rows = await getSheet("Payroll!A:I");
+    const rows = await getSheet("Payroll!A:J");
 
     let count = 0;
     let total = 0;
@@ -2217,7 +2290,7 @@ ${payrollGuide()}`
   }
 
   if (msg === "/薪資排行") {
-    const rows = await getSheet("Payroll!A:I");
+    const rows = await getSheet("Payroll!A:J");
     const map = {};
 
     rows.forEach(r => {
