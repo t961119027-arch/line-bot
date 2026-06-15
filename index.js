@@ -349,6 +349,9 @@ function staffGuide() {
     "",
     "登記抽成：",
     "/員工 A 1290 90 4554566",
+    "/員工 A",
+    "1290 90 4554566",
+    "1290 90 4554567",
     "A 300",
     "B 300*2 備註",
     "/抽成 C 500 3 備註",
@@ -381,6 +384,11 @@ function payrollGuide() {
     "登記格式：",
     "/員工 A 售價 抽成 8591編號",
     "例：/員工 A 1290 90 4554566",
+    "",
+    "批次登記：",
+    "/員工 A",
+    "1290 90 4554566",
+    "1290 90 4554567",
     "",
     "8591編號會防止重複登記。",
     "",
@@ -467,6 +475,9 @@ async function upsertStaffName(groupId, code, name) {
 }
 
 function parseCommissionCommand(msg, configRow) {
+  const batch = parseBatchStaffCommissionCommand(msg, configRow);
+  if (batch) return batch;
+
   let directMatch = msg.match(/^\/員工\s+(\S+)\s+([0-9,]+)\s+([0-9,]+)\s+(\S+)(?:\s+([\s\S]+))?$/);
   if (directMatch) {
     const code = resolveStaffCode(directMatch[1], configRow);
@@ -514,6 +525,52 @@ function parseCommissionCommand(msg, configRow) {
   };
 }
 
+function parseBatchStaffCommissionCommand(msg, configRow) {
+  const lines = String(msg || "").split(/\r?\n/).map(line => line.trim()).filter(Boolean);
+  if (lines.length < 2) return null;
+
+  const header = lines[0].match(/^\/員工\s+(\S+)$/);
+  if (!header) return null;
+
+  const code = resolveStaffCode(header[1], configRow);
+  if (!code) return null;
+
+  const entries = [];
+  const errors = [];
+
+  lines.slice(1).forEach((line, index) => {
+    const match = line.match(/^([0-9,]+)\s+([0-9,]+)\s+(\S+)(?:\s+([\s\S]+))?$/);
+    if (!match) {
+      errors.push(`第 ${index + 2} 行格式錯誤：${line}`);
+      return;
+    }
+
+    const price = parseMoney(match[1]);
+    const commission = parseMoney(match[2]);
+    if (Number.isNaN(price) || Number.isNaN(commission)) {
+      errors.push(`第 ${index + 2} 行金額錯誤：${line}`);
+      return;
+    }
+
+    entries.push({
+      mode: "direct",
+      code,
+      price,
+      commission,
+      dealId: match[3],
+      quantity: 1,
+      note: match[4] || ""
+    });
+  });
+
+  return {
+    mode: "batch-direct",
+    code,
+    entries,
+    errors
+  };
+}
+
 function resolveStaffCode(value, configRow) {
   const code = normalizeStaffCode(value);
   if (code) return code;
@@ -522,6 +579,10 @@ function resolveStaffCode(value, configRow) {
 }
 
 async function recordCommission(groupId, actorName, entry, configRow) {
+  if (entry.mode === "batch-direct") {
+    return recordBatchCommission(groupId, actorName, entry, configRow);
+  }
+
   if (entry.mode === "direct") {
     if (await payrollDealExists(entry.dealId)) {
       return {
@@ -604,6 +665,45 @@ async function recordCommission(groupId, actorName, entry, configRow) {
       `本次薪水：${formatMoney(totalCommission)}`,
       `備註：${note || "-"}`
     ].join("\n")
+  };
+}
+
+async function recordBatchCommission(groupId, actorName, batch, configRow) {
+  const results = [];
+  let successCount = 0;
+  let duplicateCount = 0;
+  let totalCommission = 0;
+
+  for (const entry of batch.entries) {
+    if (await payrollDealExists(entry.dealId)) {
+      duplicateCount++;
+      results.push(`重複：${entry.dealId}`);
+      continue;
+    }
+
+    const result = await recordCommission(groupId, actorName, entry, configRow);
+    if (result.ok) {
+      successCount++;
+      totalCommission += Number(entry.commission) || 0;
+      results.push(`成功：${entry.dealId} / ${formatMoney(entry.commission)}`);
+    } else {
+      results.push(`失敗：${entry.dealId} / ${result.message}`);
+    }
+  }
+
+  const staffName = staffNameFromConfig(configRow, batch.code);
+  return {
+    ok: batch.errors.length === 0 && successCount > 0,
+    message: [
+      `員工：${batch.code} / ${staffName}`,
+      `成功：${successCount} 筆`,
+      `重複：${duplicateCount} 筆`,
+      `本次合計薪水：${formatMoney(totalCommission)}`,
+      "",
+      ...batch.errors,
+      ...results.slice(0, 20),
+      results.length > 20 ? `...另有 ${results.length - 20} 筆` : ""
+    ].filter(Boolean).join("\n")
   };
 }
 
